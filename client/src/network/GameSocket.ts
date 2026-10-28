@@ -1,6 +1,7 @@
 export type ConnectionState = "connecting" | "connected" | "disconnected";
 
 type ConnectionListener = (state: ConnectionState) => void;
+type MessageListener = (message: ServerMessage) => void;
 
 interface ServerMessage {
   type: string;
@@ -10,6 +11,7 @@ interface ServerMessage {
 export class GameSocket {
   private socket: WebSocket | null = null;
   private readonly listeners = new Set<ConnectionListener>();
+  private readonly messageListeners = new Set<MessageListener>();
 
   connect(): void {
     if (this.socket?.readyState === WebSocket.OPEN) {
@@ -27,6 +29,7 @@ export class GameSocket {
     this.socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data) as ServerMessage;
       console.info("Server message:", message);
+      this.emitMessage(message);
     });
 
     this.socket.addEventListener("close", () => {
@@ -49,9 +52,20 @@ export class GameSocket {
     return () => this.listeners.delete(listener);
   }
 
+  onMessage(listener: MessageListener): () => void {
+    this.messageListeners.add(listener);
+    return () => this.messageListeners.delete(listener);
+  }
+
   private emit(state: ConnectionState): void {
     for (const listener of this.listeners) {
       listener(state);
+    }
+  }
+
+  private emitMessage(message: ServerMessage): void {
+    for (const listener of this.messageListeners) {
+      listener(message);
     }
   }
 

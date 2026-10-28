@@ -1,25 +1,54 @@
 import Phaser from "phaser";
 
-const PLAYER_SPEED = 280;
+import { GameSocket } from "../../network/GameSocket";
+
 const PLAYER_RADIUS = 20;
 
+interface PlayerState {
+  id: string;
+  x: number;
+  y: number;
+}
+
+function isPlayerState(value: unknown): value is PlayerState {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const player = value as Record<string, unknown>;
+  return (
+    typeof player.id === "string" &&
+    typeof player.x === "number" &&
+    typeof player.y === "number"
+  );
+}
+
 export class ArenaScene extends Phaser.Scene {
-  private player!: Phaser.GameObjects.Arc;
+  private readonly players = new Map<string, Phaser.GameObjects.Arc>();
+  private localPlayerId: string | null = null;
+  private localPlayer: Phaser.GameObjects.Arc | null = null;
   private aimLine!: Phaser.GameObjects.Graphics;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private movementKeys!: Record<"up" | "down" | "left" | "right", Phaser.Input.Keyboard.Key>;
 
-  constructor() {
+  constructor(private readonly gameSocket: GameSocket) {
     super("arena");
   }
 
   create(): void {
     this.drawArena();
 
-    this.player = this.add.circle(640, 360, PLAYER_RADIUS, 0x5bf2bd);
-    this.player.setStrokeStyle(4, 0xd8fff1, 0.85);
-
     this.aimLine = this.add.graphics();
+
+    this.gameSocket.onMessage((message) => {
+      if (message.type === "server_connected" && typeof message.player_id === "string") {
+        this.localPlayerId = message.player_id;
+      }
+
+      if (message.type === "world_state" && Array.isArray(message.players)) {
+        this.syncPlayers(message.players.filter(isPlayerState));
+      }
+    });
 
     const keyboard = this.input.keyboard;
     if (!keyboard) {
@@ -43,7 +72,11 @@ export class ArenaScene extends Phaser.Scene {
       .setOrigin(0.5);
   }
 
-  update(_time: number, delta: number): void {
+  update(_time: number, _delta: number): void {
+    if (!this.localPlayer) {
+      return;
+    }
+
     const direction = new Phaser.Math.Vector2(
       this.getAxis(
         this.movementKeys.left,
@@ -61,14 +94,48 @@ export class ArenaScene extends Phaser.Scene {
 
     if (direction.lengthSq() > 0) {
       direction.normalize();
-      const distance = PLAYER_SPEED * (delta / 1000);
-      this.player.x += direction.x * distance;
-      this.player.y += direction.y * distance;
+      this.gameSocket.send({
+        type: "move_intent",
+        direction_x: direction.x,
+        direction_y: direction.y,
+      });
     }
 
-    this.player.x = Phaser.Math.Clamp(this.player.x, 72, 1208);
-    this.player.y = Phaser.Math.Clamp(this.player.y, 72, 608);
     this.drawAimLine();
+  }
+
+  private syncPlayers(serverPlayers: PlayerState[]): void {
+    const currentPlayerIds = new Set(serverPlayers.map((player) => player.id));
+
+    for (const playerState of serverPlayers) {
+      let player = this.players.get(playerState.id);
+      if (!player) {
+        const isLocalPlayer = playerState.id === this.localPlayerId;
+        player = this.add.circle(
+          playerState.x,
+          playerState.y,
+          PLAYER_RADIUS,
+          isLocalPlayer ? 0x5bf2bd : 0xf5c55b,
+        );
+        player.setStrokeStyle(4, isLocalPlayer ? 0xd8fff1 : 0xffe2a1, 0.85);
+        this.players.set(playerState.id, player);
+      }
+
+      player.setPosition(playerState.x, playerState.y);
+      if (playerState.id === this.localPlayerId) {
+        this.localPlayer = player;
+      }
+    }
+
+    for (const [playerId, player] of this.players) {
+      if (!currentPlayerIds.has(playerId)) {
+        player.destroy();
+        this.players.delete(playerId);
+        if (playerId === this.localPlayerId) {
+          this.localPlayer = null;
+        }
+      }
+    }
   }
 
   private drawArena(): void {
@@ -90,19 +157,24 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private drawAimLine(): void {
+    const player = this.localPlayer;
+    if (!player) {
+      return;
+    }
+
     const pointer = this.input.activePointer;
     const angle = Phaser.Math.Angle.Between(
-      this.player.x,
-      this.player.y,
+      player.x,
+      player.y,
       pointer.worldX,
       pointer.worldY,
     );
-    const endX = this.player.x + Math.cos(angle) * 54;
-    const endY = this.player.y + Math.sin(angle) * 54;
+    const endX = player.x + Math.cos(angle) * 54;
+    const endY = player.y + Math.sin(angle) * 54;
 
     this.aimLine.clear();
     this.aimLine.lineStyle(5, 0xf5c55b, 1);
-    this.aimLine.lineBetween(this.player.x, this.player.y, endX, endY);
+    this.aimLine.lineBetween(player.x, player.y, endX, endY);
   }
 
   private getAxis(

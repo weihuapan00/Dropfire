@@ -17,6 +17,7 @@ app.innerHTML = `
         <div>
           <h1>Dropfire</h1>
           <p>Multiplayer arena prototype - Milestone 1</p>
+          <p class="player-id" id="player-id">You: waiting for player ID</p>
         </div>
       </div>
       <div class="status" id="server-status" data-state="connecting">
@@ -53,6 +54,7 @@ app.innerHTML = `
 
 const statusElement = document.querySelector<HTMLElement>("#server-status");
 const statusText = document.querySelector<HTMLElement>("#server-status-text");
+const playerIdElement = document.querySelector<HTMLElement>("#player-id");
 
 function renderConnectionState(state: ConnectionState): void {
   if (!statusElement || !statusText) {
@@ -69,9 +71,19 @@ function renderConnectionState(state: ConnectionState): void {
   statusText.textContent = labels[state];
 }
 
-createGame("game-root");
+function renderPlayerId(playerId: string): void {
+  if (playerIdElement) {
+    playerIdElement.textContent = `You: ${playerId.slice(0, 8)}`;
+  }
+}
 
 const gameSocket = new GameSocket();
+createGame("game-root", gameSocket);
 gameSocket.onStateChange(renderConnectionState);
+gameSocket.onMessage((message) => {
+  if (message.type === "server_connected" && typeof message.player_id === "string") {
+    renderPlayerId(message.player_id);
+  }
+});
 gameSocket.connect();
 
