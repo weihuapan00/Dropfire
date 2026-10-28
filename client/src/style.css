@@ -203,6 +203,62 @@ body {
   color: #69f4c1;
 }
 
+.test-panel {
+  margin-top: 18px;
+  border-top: 1px solid #273142;
+  padding-top: 16px;
+}
+
+.test-label {
+  display: block;
+  margin-top: 14px;
+  color: #a9b4c4;
+  font-size: 0.75rem;
+}
+
+.test-select,
+.test-button {
+  width: 100%;
+  margin-top: 6px;
+  border: 1px solid #3a465a;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #dfe7f2;
+  background: #171e2a;
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.test-button {
+  cursor: pointer;
+}
+
+.test-button:hover {
+  border-color: #69f4c1;
+}
+
+.pickup-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.bot-dpad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.bot-dpad .test-button:first-child {
+  grid-column: 2;
+}
+
+.bot-dpad .test-button:nth-child(2) {
+  grid-column: 1;
+}
+
 @media (max-width: 820px) {
   .shell {
     padding: 14px;

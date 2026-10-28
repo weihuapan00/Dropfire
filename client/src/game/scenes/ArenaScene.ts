@@ -3,11 +3,40 @@ import Phaser from "phaser";
 import { GameSocket } from "../../network/GameSocket";
 
 const PLAYER_RADIUS = 20;
+const WEAPON_TYPES = ["fists", "knife", "pistol", "rifle"] as const;
+
+type WeaponType = (typeof WEAPON_TYPES)[number];
+
+const WEAPON_LABELS: Record<WeaponType, string> = {
+  fists: "FISTS",
+  knife: "KNIFE",
+  pistol: "PISTOL",
+  rifle: "RIFLE",
+};
+
+const WEAPON_COLORS: Record<WeaponType, number> = {
+  fists: 0x5bf2bd,
+  knife: 0xf15d58,
+  pistol: 0xf15d58,
+  rifle: 0xf15d58,
+};
 
 interface PlayerState {
   id: string;
   x: number;
   y: number;
+  weapon: WeaponType;
+}
+
+interface PickupState {
+  id: string;
+  x: number;
+  y: number;
+  weapon: WeaponType;
+}
+
+function isWeaponType(value: unknown): value is WeaponType {
+  return typeof value === "string" && WEAPON_TYPES.some((weapon) => weapon === value);
 }
 
 function isPlayerState(value: unknown): value is PlayerState {
@@ -19,12 +48,30 @@ function isPlayerState(value: unknown): value is PlayerState {
   return (
     typeof player.id === "string" &&
     typeof player.x === "number" &&
-    typeof player.y === "number"
+    typeof player.y === "number" &&
+    isWeaponType(player.weapon)
+  );
+}
+
+function isPickupState(value: unknown): value is PickupState {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const pickup = value as Record<string, unknown>;
+  return (
+    typeof pickup.id === "string" &&
+    typeof pickup.x === "number" &&
+    typeof pickup.y === "number" &&
+    isWeaponType(pickup.weapon) &&
+    pickup.weapon !== "fists"
   );
 }
 
 export class ArenaScene extends Phaser.Scene {
   private readonly players = new Map<string, Phaser.GameObjects.Arc>();
+  private readonly weaponLabels = new Map<string, Phaser.GameObjects.Text>();
+  private readonly pickups = new Map<string, Phaser.GameObjects.Container>();
   private localPlayerId: string | null = null;
   private localPlayer: Phaser.GameObjects.Arc | null = null;
   private aimLine!: Phaser.GameObjects.Graphics;
@@ -45,8 +92,13 @@ export class ArenaScene extends Phaser.Scene {
         this.localPlayerId = message.player_id;
       }
 
-      if (message.type === "world_state" && Array.isArray(message.players)) {
+      if (
+        message.type === "world_state" &&
+        Array.isArray(message.players) &&
+        Array.isArray(message.pickups)
+      ) {
         this.syncPlayers(message.players.filter(isPlayerState));
+        this.syncPickups(message.pickups.filter(isPickupState));
       }
     });
 
@@ -64,7 +116,7 @@ export class ArenaScene extends Phaser.Scene {
     }) as Record<"up" | "down" | "left" | "right", Phaser.Input.Keyboard.Key>;
 
     this.add
-      .text(640, 650, "Move with WASD or arrow keys - Aim with the pointer", {
+      .text(640, 650, "Move: WASD / arrows  •  Walk into a weapon pickup to equip it", {
         color: "#96a3b6",
         fontFamily: "system-ui, sans-serif",
         fontSize: "18px",
@@ -119,9 +171,21 @@ export class ArenaScene extends Phaser.Scene {
         );
         player.setStrokeStyle(4, isLocalPlayer ? 0xd8fff1 : 0xffe2a1, 0.85);
         this.players.set(playerState.id, player);
+        this.weaponLabels.set(
+          playerState.id,
+          this.add
+            .text(playerState.x, playerState.y - 42, "", {
+              color: isLocalPlayer ? "#d8fff1" : "#ffe2a1",
+              fontFamily: "system-ui, sans-serif",
+              fontSize: "14px",
+              fontStyle: "bold",
+            })
+            .setOrigin(0.5),
+        );
       }
 
       player.setPosition(playerState.x, playerState.y);
+      this.updateWeaponLabel(playerState);
       if (playerState.id === this.localPlayerId) {
         this.localPlayer = player;
       }
@@ -131,9 +195,53 @@ export class ArenaScene extends Phaser.Scene {
       if (!currentPlayerIds.has(playerId)) {
         player.destroy();
         this.players.delete(playerId);
+        this.weaponLabels.get(playerId)?.destroy();
+        this.weaponLabels.delete(playerId);
         if (playerId === this.localPlayerId) {
           this.localPlayer = null;
         }
+      }
+    }
+  }
+
+  private updateWeaponLabel(playerState: PlayerState): void {
+    const label = this.weaponLabels.get(playerState.id);
+    if (!label) {
+      return;
+    }
+
+    const owner = playerState.id === this.localPlayerId ? "YOU · " : "";
+    label.setText(`${owner}${WEAPON_LABELS[playerState.weapon]}`);
+    label.setPosition(playerState.x, playerState.y - 42);
+  }
+
+  private syncPickups(serverPickups: PickupState[]): void {
+    const currentPickupIds = new Set(serverPickups.map((pickup) => pickup.id));
+
+    for (const pickupState of serverPickups) {
+      let pickup = this.pickups.get(pickupState.id);
+      if (!pickup) {
+        const marker = this.add.circle(0, 0, 24, WEAPON_COLORS[pickupState.weapon], 0.9);
+        marker.setStrokeStyle(3, 0xffffff, 0.7);
+        const label = this.add
+          .text(0, 0, WEAPON_LABELS[pickupState.weapon], {
+            color: "#081018",
+            fontFamily: "system-ui, sans-serif",
+            fontSize: "11px",
+            fontStyle: "bold",
+          })
+          .setOrigin(0.5);
+        pickup = this.add.container(pickupState.x, pickupState.y, [marker, label]);
+        this.pickups.set(pickupState.id, pickup);
+      }
+
+      pickup.setPosition(pickupState.x, pickupState.y);
+    }
+
+    for (const [pickupId, pickup] of this.pickups) {
+      if (!currentPickupIds.has(pickupId)) {
+        pickup.destroy();
+        this.pickups.delete(pickupId);
       }
     }
   }
