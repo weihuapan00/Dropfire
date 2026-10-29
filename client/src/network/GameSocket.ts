@@ -84,8 +84,11 @@ export class GameSocket {
 
   private getWebSocketUrl(): string {
     const configuredUrl = import.meta.env.VITE_WS_URL as string | undefined;
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const localDevelopmentUrl = `${protocol}//${window.location.hostname}:8000/ws`;
+    const deployedUrl = `${protocol}//${window.location.host}/ws`;
     const baseUrl = configuredUrl
-      ?? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8000/ws`;
+      ?? (import.meta.env.DEV ? localDevelopmentUrl : deployedUrl);
     return `${baseUrl.replace(/\/$/, "")}/${encodeURIComponent(this.roomCode)}?session=${encodeURIComponent(this.sessionToken)}`;
   }
 

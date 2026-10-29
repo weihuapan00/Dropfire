@@ -186,7 +186,11 @@ function renderPlayerId(playerId: string): void {
 
 function apiUrl(path: string): string {
   const configuredUrl = import.meta.env.VITE_API_URL as string | undefined;
-  return `${(configuredUrl ?? `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/$/, "")}${path}`;
+  const localDevelopmentUrl = `${window.location.protocol}//${window.location.hostname}:8000`;
+  const deployedUrl = window.location.origin;
+  const baseUrl = configuredUrl
+    ?? (import.meta.env.DEV ? localDevelopmentUrl : deployedUrl);
+  return `${baseUrl.replace(/\/$/, "")}${path}`;
 }
 
 function startGame(roomCode: string): void {
