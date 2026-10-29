@@ -10,8 +10,13 @@ interface ServerMessage {
 
 export class GameSocket {
   private socket: WebSocket | null = null;
+  private reconnectTimer: number | null = null;
+  private reconnectAttempts = 0;
+  private sessionToken = this.getSessionToken();
   private readonly listeners = new Set<ConnectionListener>();
   private readonly messageListeners = new Set<MessageListener>();
+
+  constructor(private readonly roomCode: string) {}
 
   connect(): void {
     if (this.socket?.readyState === WebSocket.OPEN) {
@@ -19,24 +24,32 @@ export class GameSocket {
     }
 
     this.emit("connecting");
-    this.socket = new WebSocket(this.getWebSocketUrl());
+    const socket = new WebSocket(this.getWebSocketUrl());
+    this.socket = socket;
 
-    this.socket.addEventListener("open", () => {
+    socket.addEventListener("open", () => {
+      this.reconnectAttempts = 0;
       this.emit("connected");
       this.send({ type: "client_ready" });
     });
 
-    this.socket.addEventListener("message", (event) => {
+    socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data) as ServerMessage;
+      if (message.type === "server_connected" && typeof message.session_token === "string") {
+        this.sessionToken = message.session_token;
+        sessionStorage.setItem("dropfire-tab-session-token", this.sessionToken);
+      }
       console.info("Server message:", message);
       this.emitMessage(message);
     });
 
-    this.socket.addEventListener("close", () => {
+    socket.addEventListener("close", () => {
+      if (this.socket !== socket) return;
       this.emit("disconnected");
+      this.scheduleReconnect();
     });
 
-    this.socket.addEventListener("error", () => {
+    socket.addEventListener("error", () => {
       this.emit("disconnected");
     });
   }
@@ -71,12 +84,28 @@ export class GameSocket {
 
   private getWebSocketUrl(): string {
     const configuredUrl = import.meta.env.VITE_WS_URL as string | undefined;
-    if (configuredUrl) {
-      return configuredUrl;
-    }
+    const baseUrl = configuredUrl
+      ?? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8000/ws`;
+    return `${baseUrl.replace(/\/$/, "")}/${encodeURIComponent(this.roomCode)}?session=${encodeURIComponent(this.sessionToken)}`;
+  }
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    return `${protocol}//${window.location.hostname}:8000/ws`;
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer !== null) return;
+    const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 5000);
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
+  }
+
+  private getSessionToken(): string {
+    const storageKey = "dropfire-tab-session-token";
+    const existing = sessionStorage.getItem(storageKey);
+    if (existing) return existing;
+    const token = crypto.randomUUID();
+    sessionStorage.setItem(storageKey, token);
+    return token;
   }
 }
 

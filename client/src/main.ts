@@ -10,7 +10,19 @@ if (!app) {
 }
 
 app.innerHTML = `
-  <main class="shell">
+  <section class="lobby" id="lobby">
+    <h1>Dropfire rooms</h1>
+    <p>Create a room, or enter a six-character invite code.</p>
+    <div class="lobby-actions">
+      <button class="test-button" id="create-room" type="button">Create room</button>
+      <input class="test-select" id="room-code-input" maxlength="6" placeholder="ABC123" autocomplete="off" />
+      <button class="test-button" id="join-room" type="button">Join by code</button>
+    </div>
+    <p id="lobby-message"></p>
+    <h2>Available rooms</h2>
+    <div id="room-list"></div>
+  </section>
+  <main class="shell" id="game-shell" hidden>
     <header class="topbar">
       <div class="brand">
         <div class="brand-mark">DF</div>
@@ -18,6 +30,7 @@ app.innerHTML = `
           <h1>Dropfire</h1>
           <p>Multiplayer arena prototype - Milestone 1</p>
           <p class="player-id" id="player-id">You: waiting for player ID</p>
+          <p class="player-id">Room: <span id="room-code"></span> <button id="copy-room-code" type="button">Copy room code</button></p>
         </div>
       </div>
       <div class="status" id="server-status" data-state="connecting">
@@ -86,6 +99,15 @@ const refillWeaponsButton = document.querySelector<HTMLButtonElement>("#refill-w
 const testBotSelect = document.querySelector<HTMLSelectElement>("#test-bot-select");
 const pickupButtons = document.querySelectorAll<HTMLButtonElement>("[data-pickup-id]");
 const botMoveButtons = document.querySelectorAll<HTMLButtonElement>("[data-bot-x]");
+const lobby = document.querySelector<HTMLElement>("#lobby");
+const gameShell = document.querySelector<HTMLElement>("#game-shell");
+const createRoomButton = document.querySelector<HTMLButtonElement>("#create-room");
+const joinRoomButton = document.querySelector<HTMLButtonElement>("#join-room");
+const roomCodeInput = document.querySelector<HTMLInputElement>("#room-code-input");
+const lobbyMessage = document.querySelector<HTMLElement>("#lobby-message");
+const roomList = document.querySelector<HTMLElement>("#room-list");
+const roomCodeElement = document.querySelector<HTMLElement>("#room-code");
+const copyRoomCodeButton = document.querySelector<HTMLButtonElement>("#copy-room-code");
 
 interface TestPlayerState {
   id: string;
@@ -96,6 +118,8 @@ interface TestPlayerState {
 }
 
 let localPlayerId: string | null = null;
+let currentRoomCode: string | null = null;
+let gameSocket: GameSocket | null = null;
 
 function isTestPlayerState(value: unknown): value is TestPlayerState {
   if (typeof value !== "object" || value === null) {
@@ -160,10 +184,20 @@ function renderPlayerId(playerId: string): void {
   }
 }
 
-const gameSocket = new GameSocket();
-createGame("game-root", gameSocket);
-gameSocket.onStateChange(renderConnectionState);
-gameSocket.onMessage((message) => {
+function apiUrl(path: string): string {
+  const configuredUrl = import.meta.env.VITE_API_URL as string | undefined;
+  return `${(configuredUrl ?? `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/$/, "")}${path}`;
+}
+
+function startGame(roomCode: string): void {
+  currentRoomCode = roomCode;
+  roomCodeElement && (roomCodeElement.textContent = roomCode);
+  lobby?.setAttribute("hidden", "");
+  gameShell?.removeAttribute("hidden");
+  gameSocket = new GameSocket(roomCode);
+  createGame("game-root", gameSocket);
+  gameSocket.onStateChange(renderConnectionState);
+  gameSocket.onMessage((message) => {
   if (message.type === "server_connected" && typeof message.player_id === "string") {
     localPlayerId = message.player_id;
     renderPlayerId(message.player_id);
@@ -172,26 +206,62 @@ gameSocket.onMessage((message) => {
   if (message.type === "world_state" && Array.isArray(message.players)) {
     renderTestBots(message.players.filter(isTestPlayerState));
   }
+  });
+  gameSocket.connect();
+}
+
+async function refreshRooms(): Promise<void> {
+  const response = await fetch(apiUrl("/api/rooms"));
+  const rooms = await response.json() as Array<{
+    code: string;
+    players: number;
+    human_players: number;
+    max_players: number;
+    phase: string;
+  }>;
+  if (!roomList) return;
+  roomList.innerHTML = "";
+  for (const room of rooms) {
+    const button = document.createElement("button");
+    button.className = "test-button";
+    button.textContent = `${room.code} · ${room.human_players} human · ${room.players}/${room.max_players} total · ${room.phase}`;
+    button.addEventListener("click", () => startGame(room.code));
+    roomList.append(button);
+  }
+}
+
+createRoomButton?.addEventListener("click", async () => {
+  const response = await fetch(apiUrl("/api/rooms"), { method: "POST" });
+  const room = await response.json() as { code: string };
+  startGame(room.code);
 });
-spawnTestBotButton?.addEventListener("click", () => gameSocket.send({ type: "spawn_test_bot" }));
+joinRoomButton?.addEventListener("click", () => {
+  const code = roomCodeInput?.value.trim().toUpperCase() ?? "";
+  if (/^[A-Z2-9]{6}$/.test(code)) startGame(code);
+  else if (lobbyMessage) lobbyMessage.textContent = "Enter a six-character room code.";
+});
+copyRoomCodeButton?.addEventListener("click", async () => {
+  if (currentRoomCode) await navigator.clipboard.writeText(currentRoomCode);
+});
+spawnTestBotButton?.addEventListener("click", () => gameSocket?.send({ type: "spawn_test_bot" }));
 respawnTestBotButton?.addEventListener("click", () => {
   const playerId = testBotSelect?.value;
   if (playerId) {
-    gameSocket.send({ type: "debug_respawn_bot", player_id: playerId });
+    gameSocket?.send({ type: "debug_respawn_bot", player_id: playerId });
   }
 });
 resetTestRoundButton?.addEventListener("click", () =>
-  gameSocket.send({ type: "debug_reset_test_round" }),
+  gameSocket?.send({ type: "debug_reset_test_round" }),
 );
 refillWeaponsButton?.addEventListener("click", () =>
-  gameSocket.send({ type: "debug_reset_weapon_pickups" }),
+  gameSocket?.send({ type: "debug_reset_weapon_pickups" }),
 );
 for (const button of pickupButtons) {
   button.addEventListener("click", () => {
     const playerId = testBotSelect?.value;
     const pickupId = button.dataset.pickupId;
     if (playerId && pickupId) {
-      gameSocket.send({ type: "debug_collect_pickup", player_id: playerId, pickup_id: pickupId });
+      gameSocket?.send({ type: "debug_collect_pickup", player_id: playerId, pickup_id: pickupId });
     }
   });
 }
@@ -201,7 +271,7 @@ for (const button of botMoveButtons) {
     const directionX = Number(button.dataset.botX);
     const directionY = Number(button.dataset.botY);
     if (playerId) {
-      gameSocket.send({
+      gameSocket?.send({
         type: "debug_move_bot",
         player_id: playerId,
         direction_x: directionX,
@@ -210,5 +280,10 @@ for (const button of botMoveButtons) {
     }
   });
 }
-gameSocket.connect();
+void refreshRooms();
+window.setInterval(() => {
+  if (!lobby?.hasAttribute("hidden")) {
+    void refreshRooms();
+  }
+}, 2000);
 

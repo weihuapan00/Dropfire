@@ -52,6 +52,11 @@ interface PlayerState {
   melee_angle: number;
   hp: number;
   alive: boolean;
+  connected: boolean;
+  damage_dealt: number;
+  kills: number;
+  respawn_ends_in_seconds: number;
+  spawn_protection_ends_in_seconds: number;
 }
 
 interface PickupState {
@@ -104,7 +109,12 @@ function isPlayerState(value: unknown): value is PlayerState {
     typeof player.melee_progress === "number" &&
     typeof player.melee_angle === "number" &&
     typeof player.hp === "number" &&
-    typeof player.alive === "boolean"
+    typeof player.alive === "boolean" &&
+    typeof player.connected === "boolean" &&
+    typeof player.damage_dealt === "number" &&
+    typeof player.kills === "number" &&
+    typeof player.respawn_ends_in_seconds === "number" &&
+    typeof player.spawn_protection_ends_in_seconds === "number"
   );
 }
 
@@ -185,6 +195,12 @@ export class ArenaScene extends Phaser.Scene {
   private localPlayerIsAlive = true;
   private localPlayerIsReloading = false;
   private roundPhase: RoundState["phase"] = "waiting";
+  private readonly playerAliveStates = new Map<string, boolean>();
+  private hasSyncedCovers = false;
+  private lastRoundHudText = "";
+  private lastScoreboardText = "";
+  private livingSpectatorIds: string[] = [];
+  private spectatorTargetId: string | null = null;
   private cameraIsFollowingLocalPlayer = false;
   private automaticFireIsHeld = false;
   private nextAutomaticFireAt = 0;
@@ -193,10 +209,13 @@ export class ArenaScene extends Phaser.Scene {
   private aimLine!: Phaser.GameObjects.Graphics;
   private ammoHud!: Phaser.GameObjects.Text;
   private roundHud!: Phaser.GameObjects.Text;
+  private scoreboardHud!: Phaser.GameObjects.Text;
+  private spectatorHud!: Phaser.GameObjects.Text;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private movementKeys!: Record<"up" | "down" | "left" | "right", Phaser.Input.Keyboard.Key>;
   private reloadKey!: Phaser.Input.Keyboard.Key;
   private pickupKey!: Phaser.Input.Keyboard.Key;
+  private spectateKey!: Phaser.Input.Keyboard.Key;
 
   constructor(private readonly gameSocket: GameSocket) {
     super("arena");
@@ -219,13 +238,33 @@ export class ArenaScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(100);
     this.roundHud = this.add
-      .text(640, 18, "WAITING FOR 2 PLAYERS", {
+      .text(640, 18, "DEATHMATCH · 3:00", {
         backgroundColor: "#111a27",
         color: "#f4f7fb",
         fontFamily: "system-ui, sans-serif",
         fontSize: "18px",
         fontStyle: "bold",
         padding: { x: 10, y: 6 },
+      })
+      .setOrigin(0.5, 0)
+      .setScrollFactor(0)
+      .setDepth(100);
+    this.scoreboardHud = this.add
+      .text(18, 110, "LEADERBOARD", {
+        backgroundColor: "#111a27",
+        color: "#f4f7fb",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "14px",
+        padding: { x: 8, y: 6 },
+      })
+      .setScrollFactor(0)
+      .setDepth(100);
+    this.spectatorHud = this.add
+      .text(640, 58, "", {
+        color: "#d5dff0",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "15px",
+        fontStyle: "bold",
       })
       .setOrigin(0.5, 0)
       .setScrollFactor(0)
@@ -246,7 +285,10 @@ export class ArenaScene extends Phaser.Scene {
       ) {
         this.syncRound(message.round);
         this.syncPlayers(message.players.filter(isPlayerState));
-        this.syncCovers(message.covers.filter(isCoverState));
+        if (!this.hasSyncedCovers) {
+          this.syncCovers(message.covers.filter(isCoverState));
+          this.hasSyncedCovers = true;
+        }
         this.syncPickups(message.pickups.filter(isPickupState));
         this.syncBullets(message.bullets.filter(isBulletState));
       }
@@ -266,6 +308,7 @@ export class ArenaScene extends Phaser.Scene {
     }) as Record<"up" | "down" | "left" | "right", Phaser.Input.Keyboard.Key>;
     this.reloadKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
     this.pickupKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+    this.spectateKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.P);
 
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
       this.fireTowardPointer(pointer);
@@ -279,7 +322,7 @@ export class ArenaScene extends Phaser.Scene {
     });
 
     this.add
-      .text(640, 680, "Move: WASD / arrows  •  E: pick up  •  R: reload  •  Knife: click  •  Pistol: click  •  Rifle: hold left click", {
+      .text(640, 680, "Move: WASD / arrows  •  E: pick up  •  R: reload  •  P: spectate next  •  Knife: click  •  Pistol: click  •  Rifle: hold left click", {
         color: "#96a3b6",
         fontFamily: "system-ui, sans-serif",
         fontSize: "18px",
@@ -292,6 +335,10 @@ export class ArenaScene extends Phaser.Scene {
   update(time: number, delta: number): void {
     this.interpolatePlayers(delta);
     this.interpolateBullets(delta);
+
+    if (!this.localPlayerIsAlive && Phaser.Input.Keyboard.JustDown(this.spectateKey)) {
+      this.followNextSpectator();
+    }
 
     if (!this.localPlayer || !this.localPlayerIsAlive || this.roundPhase !== "active") {
       this.automaticFireIsHeld = false;
@@ -352,6 +399,9 @@ export class ArenaScene extends Phaser.Scene {
 
   private syncPlayers(serverPlayers: PlayerState[]): void {
     const currentPlayerIds = new Set(serverPlayers.map((player) => player.id));
+    this.livingSpectatorIds = serverPlayers
+      .filter((player) => player.alive && player.id !== this.localPlayerId)
+      .map((player) => player.id);
 
     for (const playerState of serverPlayers) {
       let player = this.players.get(playerState.id);
@@ -379,7 +429,12 @@ export class ArenaScene extends Phaser.Scene {
       }
 
       const isLocalPlayer = playerState.id === this.localPlayerId;
-      if (playerState.alive) {
+      const respawnedThisUpdate = this.playerAliveStates.get(playerState.id) === false && playerState.alive;
+      if (!playerState.connected) {
+        player.setFillStyle(0x4c5566);
+        player.setStrokeStyle(4, 0xb9c4d4, 0.5);
+        player.setAlpha(0.45);
+      } else if (playerState.alive) {
         player.setFillStyle(isLocalPlayer ? 0x5bf2bd : 0xf5c55b);
         player.setStrokeStyle(4, isLocalPlayer ? 0xd8fff1 : 0xffe2a1, 0.85);
         player.setAlpha(1);
@@ -390,7 +445,14 @@ export class ArenaScene extends Phaser.Scene {
       }
 
       const target = this.playerRenderTargets.get(playerState.id);
-      if (target) {
+      if (respawnedThisUpdate) {
+        // Respawn locations are server-only until this update; never interpolate from the corpse.
+        player.setPosition(playerState.x, playerState.y);
+        this.playerRenderTargets.set(
+          playerState.id,
+          new Phaser.Math.Vector2(playerState.x, playerState.y),
+        );
+      } else if (target) {
         target.set(playerState.x, playerState.y);
       } else {
         this.playerRenderTargets.set(
@@ -402,6 +464,7 @@ export class ArenaScene extends Phaser.Scene {
       this.reloadProgress.set(playerState.id, playerState.reload_progress);
       this.meleeProgress.set(playerState.id, playerState.melee_progress);
       this.meleeAngles.set(playerState.id, playerState.melee_angle);
+      this.playerAliveStates.set(playerState.id, playerState.alive);
       if (playerState.id === this.localPlayerId) {
         this.localPlayer = player;
         this.localWeapon = playerState.weapon;
@@ -420,6 +483,17 @@ export class ArenaScene extends Phaser.Scene {
       }
     }
 
+    if (this.localPlayerIsAlive && this.localPlayer) {
+      this.spectatorTargetId = null;
+      this.spectatorHud.setText("");
+      if (!this.cameraIsFollowingLocalPlayer) {
+        this.cameras.main.startFollow(this.localPlayer, true, 0.14, 0.14);
+        this.cameraIsFollowingLocalPlayer = true;
+      }
+    } else {
+      this.followNextSpectator(false);
+    }
+
     for (const [playerId, player] of this.players) {
       if (!currentPlayerIds.has(playerId)) {
         player.destroy();
@@ -434,22 +508,28 @@ export class ArenaScene extends Phaser.Scene {
         this.meleeIndicators.delete(playerId);
         this.meleeProgress.delete(playerId);
         this.meleeAngles.delete(playerId);
+        this.playerAliveStates.delete(playerId);
         if (playerId === this.localPlayerId) {
           this.localPlayer = null;
         }
       }
     }
+
+    this.syncScoreboard(serverPlayers);
   }
 
   private syncRound(round: RoundState): void {
     this.roundPhase = round.phase;
     if (round.phase === "waiting") {
-      this.roundHud.setText("WAITING FOR 2 PLAYERS");
+      this.setRoundHudText("WAITING FOR 2 PLAYERS");
       return;
     }
 
     if (round.phase === "active") {
-      this.roundHud.setText(`ROUND ${round.number}`);
+      const seconds = Math.ceil(round.ends_in_seconds);
+      const minutes = Math.floor(seconds / 60);
+      const remainingSeconds = String(seconds % 60).padStart(2, "0");
+      this.setRoundHudText(`DEATHMATCH ${round.number} · ${minutes}:${remainingSeconds}`);
       return;
     }
 
@@ -458,7 +538,52 @@ export class ArenaScene extends Phaser.Scene {
       : round.winner_id
         ? `PLAYER ${round.winner_id.slice(0, 6)} WINS`
         : "NO WINNER";
-    this.roundHud.setText(`${winnerLabel} · NEXT ROUND ${Math.ceil(round.ends_in_seconds)}s`);
+    this.setRoundHudText(`${winnerLabel} · NEXT ROUND ${Math.ceil(round.ends_in_seconds)}s`);
+  }
+
+  private setRoundHudText(text: string): void {
+    if (text === this.lastRoundHudText) return;
+    this.lastRoundHudText = text;
+    this.roundHud.setText(text);
+  }
+
+  private syncScoreboard(serverPlayers: PlayerState[]): void {
+    const rankedPlayers = [...serverPlayers].sort(
+      (left, right) => right.kills - left.kills || right.damage_dealt - left.damage_dealt,
+    );
+    const lines = rankedPlayers.map((player, index) => {
+      const name = player.id === this.localPlayerId ? "YOU" : `P${player.id.slice(0, 4)}`;
+      return `${index + 1}. ${name}  ${player.kills} K · ${Math.round(player.damage_dealt)} DMG`;
+    });
+    const text = ["LEADERBOARD", ...lines].join("\n");
+    if (text === this.lastScoreboardText) return;
+    this.lastScoreboardText = text;
+    this.scoreboardHud.setText(text);
+  }
+
+  private followNextSpectator(advance = true): void {
+    if (this.livingSpectatorIds.length === 0) {
+      this.spectatorTargetId = null;
+      this.spectatorHud.setText("ELIMINATED · WAITING FOR NEXT ROUND");
+      return;
+    }
+
+    const currentIndex = this.spectatorTargetId
+      ? this.livingSpectatorIds.indexOf(this.spectatorTargetId)
+      : -1;
+    const nextIndex = advance || currentIndex === -1
+      ? (currentIndex + 1) % this.livingSpectatorIds.length
+      : currentIndex;
+    const nextTargetId = this.livingSpectatorIds[nextIndex];
+    const nextTarget = this.players.get(nextTargetId);
+    if (!nextTarget) {
+      return;
+    }
+
+    this.spectatorTargetId = nextTargetId;
+    this.cameras.main.startFollow(nextTarget, true, 0.14, 0.14);
+    this.cameraIsFollowingLocalPlayer = false;
+    this.spectatorHud.setText(`SPECTATING ${nextTargetId.slice(0, 6)} · P: NEXT PLAYER`);
   }
 
   private updateWeaponLabel(playerState: PlayerState): void {
@@ -471,14 +596,23 @@ export class ArenaScene extends Phaser.Scene {
     const ammo = playerState.magazine_capacity > 0
       ? ` · ${playerState.ammo_in_mag}/${playerState.magazine_capacity}`
       : "";
-    const combatStatus = playerState.alive ? `HP ${playerState.hp}` : "ELIMINATED";
+    const shieldStatus = playerState.spawn_protection_ends_in_seconds > 0
+      ? `SHIELDED ${playerState.spawn_protection_ends_in_seconds.toFixed(1)}s`
+      : "";
+    const combatStatus = !playerState.connected
+      ? "DISCONNECTED"
+      : playerState.alive
+        ? shieldStatus || `HP ${playerState.hp}`
+        : `RESPAWN ${Math.ceil(playerState.respawn_ends_in_seconds)}s`;
     const reloadStatus = playerState.reload_progress > 0 ? "\nRELOADING" : "";
     label.setText(`${owner}${WEAPON_LABELS[playerState.weapon]}${ammo}\n${combatStatus}${reloadStatus}`);
     if (playerState.id === this.localPlayerId) {
       const ammoHudValue = playerState.magazine_capacity > 0
         ? `${playerState.ammo_in_mag} / ${playerState.magazine_capacity}`
         : "--";
-      const hpHudValue = playerState.alive ? `${playerState.hp}` : "ELIMINATED";
+      const hpHudValue = playerState.alive
+        ? shieldStatus || `${playerState.hp}`
+        : `RESPAWN ${Math.ceil(playerState.respawn_ends_in_seconds)}s`;
       this.ammoHud.setText(
         `Weapon: ${WEAPON_LABELS[playerState.weapon]}\nAmmo: ${ammoHudValue}\nHP: ${hpHudValue}${reloadStatus}`,
       );
