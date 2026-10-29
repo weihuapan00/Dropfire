@@ -52,6 +52,7 @@ app.innerHTML = `
           <h2>Test panel</h2>
           <p>Create a server-side test player, then send it to an available pickup without opening another browser.</p>
           <button class="test-button" id="spawn-test-bot" type="button">Add test player</button>
+          <button class="test-button" id="refill-weapons" type="button">Refill weapons</button>
           <label class="test-label" for="test-bot-select">Control</label>
           <select class="test-select" id="test-bot-select" disabled>
             <option value="">Add a test player first</option>
@@ -77,6 +78,7 @@ const statusElement = document.querySelector<HTMLElement>("#server-status");
 const statusText = document.querySelector<HTMLElement>("#server-status-text");
 const playerIdElement = document.querySelector<HTMLElement>("#player-id");
 const spawnTestBotButton = document.querySelector<HTMLButtonElement>("#spawn-test-bot");
+const refillWeaponsButton = document.querySelector<HTMLButtonElement>("#refill-weapons");
 const testBotSelect = document.querySelector<HTMLSelectElement>("#test-bot-select");
 const pickupButtons = document.querySelectorAll<HTMLButtonElement>("[data-pickup-id]");
 const botMoveButtons = document.querySelectorAll<HTMLButtonElement>("[data-bot-x]");
@@ -165,6 +167,9 @@ gameSocket.onMessage((message) => {
   }
 });
 spawnTestBotButton?.addEventListener("click", () => gameSocket.send({ type: "spawn_test_bot" }));
+refillWeaponsButton?.addEventListener("click", () =>
+  gameSocket.send({ type: "debug_reset_weapon_pickups" }),
+);
 for (const button of pickupButtons) {
   button.addEventListener("click", () => {
     const playerId = testBotSelect?.value;

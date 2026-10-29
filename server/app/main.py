@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.websockets import WebSocketDisconnected
 
 
 game_loop_task: asyncio.Task[None] | None = None
@@ -40,16 +41,35 @@ app.add_middleware(
 
 active_connections: list[WebSocket] = []
 players: dict[str, dict[str, Any]] = {}
+bullets: list[dict[str, Any]] = []
 MAX_PLAYERS = 4
 WEAPON_TYPES = {"fists", "knife", "pistol", "rifle"}
-weapon_pickups: list[dict[str, Any]] = [
-    {"id": "knife-1", "weapon": "knife", "x": 760.0, "y": 400.0},
-    {"id": "pistol-1", "weapon": "pistol", "x": 1850.0, "y": 460.0},
-    {"id": "rifle-1", "weapon": "rifle", "x": 1350.0, "y": 1060.0},
-]
+RANGED_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
+    "pistol": {"damage": 25.0, "bullet_speed": 720.0, "cooldown_seconds": 0.35},
+    "rifle": {"damage": 15.0, "bullet_speed": 1080.0, "cooldown_seconds": 0.12},
+}
+MAGAZINE_CAPACITIES = {"pistol": 12, "rifle": 30}
+INITIAL_WEAPON_PICKUPS = (
+    ("knife-1", "knife", 760.0, 400.0),
+    ("pistol-1", "pistol", 1850.0, 460.0),
+    ("rifle-1", "rifle", 1350.0, 1060.0),
+)
+
+
+def create_initial_weapon_pickups() -> list[dict[str, Any]]:
+    """Create new pickup dictionaries so testing resets cannot mutate the blueprint."""
+    return [
+        {"id": pickup_id, "weapon": weapon, "x": x, "y": y}
+        for pickup_id, weapon, x, y in INITIAL_WEAPON_PICKUPS
+    ]
+
+
+weapon_pickups = create_initial_weapon_pickups()
 PLAYER_SPEED = 280.0
 PLAYER_RADIUS = 20.0
 PICKUP_RADIUS = 24.0
+BULLET_RADIUS = 6.0
+BULLET_LIFETIME_SECONDS = 1.4
 TEST_BOT_MOVE_DISTANCE = 48.0
 ARENA_MIN_X = 72.0
 ARENA_MAX_X = 2488.0
@@ -70,15 +90,30 @@ async def broadcast_world_state() -> None:
                 "x": player["x"],
                 "y": player["y"],
                 "weapon": player["weapon"],
+                "ammo_in_mag": player["ammo_in_mag"],
+                "magazine_capacity": player["magazine_capacity"],
                 "is_bot": player["is_bot"],
                 "owner_id": player["owner_id"],
             }
             for player_id, player in players.items()
         ],
         "pickups": weapon_pickups,
+        "bullets": [
+            {
+                "id": bullet["id"],
+                "x": bullet["x"],
+                "y": bullet["y"],
+                "weapon": bullet["weapon"],
+            }
+            for bullet in bullets
+        ],
     }
     for connection in active_connections.copy():
-        await connection.send_json(message)
+        try:
+            await connection.send_json(message)
+        except (WebSocketDisconnect, WebSocketDisconnected):
+            if connection in active_connections:
+                active_connections.remove(connection)
 
 
 def apply_move_intent(player: dict[str, Any], message: dict[str, Any]) -> bool:
@@ -116,6 +151,64 @@ def advance_player_movement(player: dict[str, Any], elapsed: float) -> bool:
     return previous_position != (player["x"], player["y"])
 
 
+def fire_weapon(player: dict[str, Any], message: dict[str, Any]) -> bool:
+    """Create one server-validated projectile for a ranged weapon."""
+    direction_x = message.get("direction_x")
+    direction_y = message.get("direction_y")
+    if (
+        not isinstance(direction_x, (int, float))
+        or not isinstance(direction_y, (int, float))
+        or not isfinite(direction_x)
+        or not isfinite(direction_y)
+    ):
+        return False
+
+    settings = RANGED_WEAPON_SETTINGS.get(player["weapon"])
+    direction_length = hypot(direction_x, direction_y)
+    if not settings or direction_length == 0 or player["ammo_in_mag"] <= 0:
+        return False
+
+    now = monotonic()
+    if now - player["last_fire_at"] < settings["cooldown_seconds"]:
+        return False
+
+    normalized_x = direction_x / direction_length
+    normalized_y = direction_y / direction_length
+    start_distance = PLAYER_RADIUS + BULLET_RADIUS
+    bullets.append(
+        {
+            "id": f"bullet-{uuid4().hex[:8]}",
+            "owner_id": player["id"],
+            "weapon": player["weapon"],
+            "damage": settings["damage"],
+            "x": player["x"] + normalized_x * start_distance,
+            "y": player["y"] + normalized_y * start_distance,
+            "velocity_x": normalized_x * settings["bullet_speed"],
+            "velocity_y": normalized_y * settings["bullet_speed"],
+            "remaining_seconds": BULLET_LIFETIME_SECONDS,
+        }
+    )
+    player["last_fire_at"] = now
+    player["ammo_in_mag"] -= 1
+    return True
+
+
+def advance_bullets(elapsed: float) -> None:
+    """Advance every projectile and remove bullets that leave the playable world."""
+    for bullet in bullets.copy():
+        bullet["x"] += bullet["velocity_x"] * elapsed
+        bullet["y"] += bullet["velocity_y"] * elapsed
+        bullet["remaining_seconds"] -= elapsed
+        outside_arena = (
+            bullet["x"] < ARENA_MIN_X
+            or bullet["x"] > ARENA_MAX_X
+            or bullet["y"] < ARENA_MIN_Y
+            or bullet["y"] > ARENA_MAX_Y
+        )
+        if bullet["remaining_seconds"] <= 0 or outside_arena:
+            bullets.remove(bullet)
+
+
 async def game_loop() -> None:
     """Advance the shared world and publish one snapshot at a fixed rate."""
     previous_tick_at = monotonic()
@@ -128,6 +221,7 @@ async def game_loop() -> None:
         for player in players.values():
             if advance_player_movement(player, elapsed):
                 collect_weapon_pickup(player)
+        advance_bullets(elapsed)
 
         if active_connections:
             await broadcast_world_state()
@@ -139,10 +233,18 @@ def collect_weapon_pickup(player: dict[str, Any]) -> bool:
         distance_to_pickup = hypot(player["x"] - pickup["x"], player["y"] - pickup["y"])
         if distance_to_pickup <= PLAYER_RADIUS + PICKUP_RADIUS:
             player["weapon"] = pickup["weapon"]
+            player["magazine_capacity"] = MAGAZINE_CAPACITIES.get(pickup["weapon"], 0)
+            player["ammo_in_mag"] = player["magazine_capacity"]
             weapon_pickups.remove(pickup)
             return True
 
     return False
+
+
+def reset_weapon_pickups() -> None:
+    """Restore every map weapon for the local development test panel."""
+    weapon_pickups.clear()
+    weapon_pickups.extend(create_initial_weapon_pickups())
 
 
 def spawn_test_bot(owner_id: str) -> bool:
@@ -153,11 +255,15 @@ def spawn_test_bot(owner_id: str) -> bool:
     bot_number = sum(player["is_bot"] for player in players.values()) + 1
     bot_id = f"test-bot-{uuid4().hex[:6]}"
     players[bot_id] = {
+        "id": bot_id,
         "x": 1180.0 + bot_number * 45,
         "y": 720.0,
         "move_x": 0.0,
         "move_y": 0.0,
+        "last_fire_at": float("-inf"),
         "weapon": "fists",
+        "ammo_in_mag": 0,
+        "magazine_capacity": 0,
         "is_bot": True,
         "owner_id": owner_id,
     }
@@ -227,11 +333,15 @@ async def game_socket(websocket: WebSocket) -> None:
     active_connections.append(websocket)
     player_number = len(players)
     players[player_id] = {
+        "id": player_id,
         "x": 1280 + player_number * 60,
         "y": 720,
         "move_x": 0.0,
         "move_y": 0.0,
+        "last_fire_at": float("-inf"),
         "weapon": "fists",
+        "ammo_in_mag": 0,
+        "magazine_capacity": 0,
         "is_bot": False,
         "owner_id": None,
     }
@@ -252,9 +362,18 @@ async def game_socket(websocket: WebSocket) -> None:
                 apply_move_intent(players[player_id], message)
                 continue
 
+            if message.get("type") == "fire_intent":
+                fire_weapon(players[player_id], message)
+                continue
+
             if message.get("type") == "spawn_test_bot":
                 if spawn_test_bot(player_id):
                     await broadcast_world_state()
+                continue
+
+            if message.get("type") == "debug_reset_weapon_pickups":
+                reset_weapon_pickups()
+                await broadcast_world_state()
                 continue
 
             if message.get("type") == "debug_collect_pickup":
@@ -277,7 +396,8 @@ async def game_socket(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        active_connections.remove(websocket)
+        if websocket in active_connections:
+            active_connections.remove(websocket)
         players.pop(player_id, None)
         await broadcast_world_state()
 
