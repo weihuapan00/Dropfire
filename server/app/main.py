@@ -1,4 +1,6 @@
-from math import hypot
+import asyncio
+from contextlib import asynccontextmanager, suppress
+from math import hypot, isfinite
 from time import monotonic
 from typing import Any
 from uuid import uuid4
@@ -7,7 +9,23 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 
-app = FastAPI(title="Dropfire Server", version="0.1.0")
+game_loop_task: asyncio.Task[None] | None = None
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Run one authoritative game loop for the lifetime of the server."""
+    global game_loop_task
+    game_loop_task = asyncio.create_task(game_loop())
+    try:
+        yield
+    finally:
+        game_loop_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await game_loop_task
+
+
+app = FastAPI(title="Dropfire Server", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,19 +43,21 @@ players: dict[str, dict[str, Any]] = {}
 MAX_PLAYERS = 4
 WEAPON_TYPES = {"fists", "knife", "pistol", "rifle"}
 weapon_pickups: list[dict[str, Any]] = [
-    {"id": "knife-1", "weapon": "knife", "x": 300.0, "y": 220.0},
-    {"id": "pistol-1", "weapon": "pistol", "x": 920.0, "y": 220.0},
-    {"id": "rifle-1", "weapon": "rifle", "x": 620.0, "y": 500.0},
+    {"id": "knife-1", "weapon": "knife", "x": 760.0, "y": 400.0},
+    {"id": "pistol-1", "weapon": "pistol", "x": 1850.0, "y": 460.0},
+    {"id": "rifle-1", "weapon": "rifle", "x": 1350.0, "y": 1060.0},
 ]
 PLAYER_SPEED = 280.0
 PLAYER_RADIUS = 20.0
 PICKUP_RADIUS = 24.0
 TEST_BOT_MOVE_DISTANCE = 48.0
 ARENA_MIN_X = 72.0
-ARENA_MAX_X = 1208.0
+ARENA_MAX_X = 2488.0
 ARENA_MIN_Y = 72.0
-ARENA_MAX_Y = 608.0
-MAX_MOVEMENT_STEP_SECONDS = 0.1
+ARENA_MAX_Y = 1368.0
+TICK_RATE_HZ = 30
+TICK_INTERVAL_SECONDS = 1 / TICK_RATE_HZ
+MAX_TICK_SECONDS = 0.1
 
 
 async def broadcast_world_state() -> None:
@@ -62,23 +82,55 @@ async def broadcast_world_state() -> None:
 
 
 def apply_move_intent(player: dict[str, Any], message: dict[str, Any]) -> bool:
-    """Apply one validated movement request using server time and server limits."""
+    """Store one validated direction for the authoritative game loop to use."""
     direction_x = message.get("direction_x")
     direction_y = message.get("direction_y")
-    if not isinstance(direction_x, (int, float)) or not isinstance(direction_y, (int, float)):
+    if (
+        not isinstance(direction_x, (int, float))
+        or not isinstance(direction_y, (int, float))
+        or not isfinite(direction_x)
+        or not isfinite(direction_y)
+    ):
         return False
 
     direction_length = hypot(direction_x, direction_y)
     if direction_length == 0:
+        player["move_x"] = 0.0
+        player["move_y"] = 0.0
+        return True
+
+    player["move_x"] = direction_x / direction_length
+    player["move_y"] = direction_y / direction_length
+    return True
+
+
+def advance_player_movement(player: dict[str, Any], elapsed: float) -> bool:
+    """Move one player for one server tick using its last valid input direction."""
+    if player["move_x"] == 0 and player["move_y"] == 0:
         return False
 
-    now = monotonic()
-    elapsed = min(now - player["last_move_at"], MAX_MOVEMENT_STEP_SECONDS)
     distance = PLAYER_SPEED * elapsed
-    player["x"] = max(ARENA_MIN_X, min(ARENA_MAX_X, player["x"] + direction_x / direction_length * distance))
-    player["y"] = max(ARENA_MIN_Y, min(ARENA_MAX_Y, player["y"] + direction_y / direction_length * distance))
-    player["last_move_at"] = now
-    return True
+    previous_position = (player["x"], player["y"])
+    player["x"] = max(ARENA_MIN_X, min(ARENA_MAX_X, player["x"] + player["move_x"] * distance))
+    player["y"] = max(ARENA_MIN_Y, min(ARENA_MAX_Y, player["y"] + player["move_y"] * distance))
+    return previous_position != (player["x"], player["y"])
+
+
+async def game_loop() -> None:
+    """Advance the shared world and publish one snapshot at a fixed rate."""
+    previous_tick_at = monotonic()
+    while True:
+        await asyncio.sleep(TICK_INTERVAL_SECONDS)
+        now = monotonic()
+        elapsed = min(now - previous_tick_at, MAX_TICK_SECONDS)
+        previous_tick_at = now
+
+        for player in players.values():
+            if advance_player_movement(player, elapsed):
+                collect_weapon_pickup(player)
+
+        if active_connections:
+            await broadcast_world_state()
 
 
 def collect_weapon_pickup(player: dict[str, Any]) -> bool:
@@ -101,9 +153,10 @@ def spawn_test_bot(owner_id: str) -> bool:
     bot_number = sum(player["is_bot"] for player in players.values()) + 1
     bot_id = f"test-bot-{uuid4().hex[:6]}"
     players[bot_id] = {
-        "x": 540.0 + bot_number * 45,
-        "y": 360.0,
-        "last_move_at": monotonic(),
+        "x": 1180.0 + bot_number * 45,
+        "y": 720.0,
+        "move_x": 0.0,
+        "move_y": 0.0,
         "weapon": "fists",
         "is_bot": True,
         "owner_id": owner_id,
@@ -174,9 +227,10 @@ async def game_socket(websocket: WebSocket) -> None:
     active_connections.append(websocket)
     player_number = len(players)
     players[player_id] = {
-        "x": 640 + player_number * 60,
-        "y": 360,
-        "last_move_at": monotonic(),
+        "x": 1280 + player_number * 60,
+        "y": 720,
+        "move_x": 0.0,
+        "move_y": 0.0,
         "weapon": "fists",
         "is_bot": False,
         "owner_id": None,
@@ -195,9 +249,7 @@ async def game_socket(websocket: WebSocket) -> None:
         while True:
             message: dict[str, Any] = await websocket.receive_json()
             if message.get("type") == "move_intent":
-                if apply_move_intent(players[player_id], message):
-                    collect_weapon_pickup(players[player_id])
-                    await broadcast_world_state()
+                apply_move_intent(players[player_id], message)
                 continue
 
             if message.get("type") == "spawn_test_bot":
