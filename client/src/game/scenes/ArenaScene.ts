@@ -76,6 +76,13 @@ interface CoverState {
   height: number;
 }
 
+interface RoundState {
+  phase: "waiting" | "active" | "ending";
+  number: number;
+  winner_id: string | null;
+  ends_in_seconds: number;
+}
+
 function isWeaponType(value: unknown): value is WeaponType {
   return typeof value === "string" && WEAPON_TYPES.some((weapon) => weapon === value);
 }
@@ -145,6 +152,20 @@ function isCoverState(value: unknown): value is CoverState {
   );
 }
 
+function isRoundState(value: unknown): value is RoundState {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const round = value as Record<string, unknown>;
+  return (
+    (round.phase === "waiting" || round.phase === "active" || round.phase === "ending") &&
+    typeof round.number === "number" &&
+    (typeof round.winner_id === "string" || round.winner_id === null) &&
+    typeof round.ends_in_seconds === "number"
+  );
+}
+
 export class ArenaScene extends Phaser.Scene {
   private readonly players = new Map<string, Phaser.GameObjects.Arc>();
   private readonly playerRenderTargets = new Map<string, Phaser.Math.Vector2>();
@@ -163,6 +184,7 @@ export class ArenaScene extends Phaser.Scene {
   private localWeapon: WeaponType = "fists";
   private localPlayerIsAlive = true;
   private localPlayerIsReloading = false;
+  private roundPhase: RoundState["phase"] = "waiting";
   private cameraIsFollowingLocalPlayer = false;
   private automaticFireIsHeld = false;
   private nextAutomaticFireAt = 0;
@@ -170,6 +192,7 @@ export class ArenaScene extends Phaser.Scene {
   private readonly pointerWorldPosition = new Phaser.Math.Vector2();
   private aimLine!: Phaser.GameObjects.Graphics;
   private ammoHud!: Phaser.GameObjects.Text;
+  private roundHud!: Phaser.GameObjects.Text;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private movementKeys!: Record<"up" | "down" | "left" | "right", Phaser.Input.Keyboard.Key>;
   private reloadKey!: Phaser.Input.Keyboard.Key;
@@ -195,6 +218,18 @@ export class ArenaScene extends Phaser.Scene {
       })
       .setScrollFactor(0)
       .setDepth(100);
+    this.roundHud = this.add
+      .text(640, 18, "WAITING FOR 2 PLAYERS", {
+        backgroundColor: "#111a27",
+        color: "#f4f7fb",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "18px",
+        fontStyle: "bold",
+        padding: { x: 10, y: 6 },
+      })
+      .setOrigin(0.5, 0)
+      .setScrollFactor(0)
+      .setDepth(100);
 
     this.gameSocket.onMessage((message) => {
       if (message.type === "server_connected" && typeof message.player_id === "string") {
@@ -203,11 +238,13 @@ export class ArenaScene extends Phaser.Scene {
 
       if (
         message.type === "world_state" &&
+        isRoundState(message.round) &&
         Array.isArray(message.players) &&
         Array.isArray(message.covers) &&
         Array.isArray(message.pickups) &&
         Array.isArray(message.bullets)
       ) {
+        this.syncRound(message.round);
         this.syncPlayers(message.players.filter(isPlayerState));
         this.syncCovers(message.covers.filter(isCoverState));
         this.syncPickups(message.pickups.filter(isPickupState));
@@ -256,7 +293,7 @@ export class ArenaScene extends Phaser.Scene {
     this.interpolatePlayers(delta);
     this.interpolateBullets(delta);
 
-    if (!this.localPlayer || !this.localPlayerIsAlive) {
+    if (!this.localPlayer || !this.localPlayerIsAlive || this.roundPhase !== "active") {
       this.automaticFireIsHeld = false;
       this.aimLine.clear();
       return;
@@ -402,6 +439,26 @@ export class ArenaScene extends Phaser.Scene {
         }
       }
     }
+  }
+
+  private syncRound(round: RoundState): void {
+    this.roundPhase = round.phase;
+    if (round.phase === "waiting") {
+      this.roundHud.setText("WAITING FOR 2 PLAYERS");
+      return;
+    }
+
+    if (round.phase === "active") {
+      this.roundHud.setText(`ROUND ${round.number}`);
+      return;
+    }
+
+    const winnerLabel = round.winner_id === this.localPlayerId
+      ? "YOU WIN"
+      : round.winner_id
+        ? `PLAYER ${round.winner_id.slice(0, 6)} WINS`
+        : "NO WINNER";
+    this.roundHud.setText(`${winnerLabel} · NEXT ROUND ${Math.ceil(round.ends_in_seconds)}s`);
   }
 
   private updateWeaponLabel(playerState: PlayerState): void {
@@ -674,7 +731,12 @@ export class ArenaScene extends Phaser.Scene {
 
   private fireTowardPointer(pointer: Phaser.Input.Pointer): void {
     const player = this.localPlayer;
-    if (!player || !this.localPlayerIsAlive || this.localPlayerIsReloading) {
+    if (
+      !player ||
+      !this.localPlayerIsAlive ||
+      this.localPlayerIsReloading ||
+      this.roundPhase !== "active"
+    ) {
       return;
     }
 

@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
 from math import atan2, hypot, isfinite
+from random import uniform
 from time import monotonic
 from typing import Any
 from uuid import uuid4
@@ -42,6 +43,12 @@ app.add_middleware(
 active_connections: list[WebSocket] = []
 players: dict[str, dict[str, Any]] = {}
 bullets: list[dict[str, Any]] = []
+round_state: dict[str, Any] = {
+    "phase": "waiting",
+    "number": 0,
+    "winner_id": None,
+    "ends_at": None,
+}
 MAX_PLAYERS = 4
 WEAPON_TYPES = {"fists", "knife", "pistol", "rifle"}
 RANGED_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
@@ -99,6 +106,8 @@ ARENA_MAX_Y = 1368.0
 TICK_RATE_HZ = 30
 TICK_INTERVAL_SECONDS = 1 / TICK_RATE_HZ
 MAX_TICK_SECONDS = 0.1
+MIN_PLAYERS_TO_START_ROUND = 2
+ROUND_END_DELAY_SECONDS = 4.0
 
 
 async def broadcast_world_state() -> None:
@@ -106,6 +115,7 @@ async def broadcast_world_state() -> None:
     now = monotonic()
     message = {
         "type": "world_state",
+        "round": get_round_snapshot(now),
         "players": [
             {
                 "id": player_id,
@@ -146,7 +156,7 @@ async def broadcast_world_state() -> None:
 
 def apply_move_intent(player: dict[str, Any], message: dict[str, Any]) -> bool:
     """Store one validated direction for the authoritative game loop to use."""
-    if not player["alive"]:
+    if not player["alive"] or not round_is_active():
         return False
 
     direction_x = message.get("direction_x")
@@ -189,7 +199,7 @@ def advance_player_movement(player: dict[str, Any], elapsed: float) -> bool:
 
 def fire_weapon(player: dict[str, Any], message: dict[str, Any]) -> bool:
     """Create one server-validated projectile for a ranged weapon."""
-    if not player["alive"] or player["reload_ends_at"] is not None:
+    if not player["alive"] or not round_is_active() or player["reload_ends_at"] is not None:
         return False
 
     direction_x = message.get("direction_x")
@@ -234,7 +244,7 @@ def fire_weapon(player: dict[str, Any], message: dict[str, Any]) -> bool:
 
 def reload_weapon(player: dict[str, Any]) -> bool:
     """Start a delayed reload for a living player with a partly empty gun."""
-    if not player["alive"]:
+    if not player["alive"] or not round_is_active():
         return False
 
     magazine_capacity = MAGAZINE_CAPACITIES.get(player["weapon"])
@@ -251,7 +261,7 @@ def reload_weapon(player: dict[str, Any]) -> bool:
 
 def attack_with_knife(player: dict[str, Any], message: dict[str, Any]) -> bool:
     """Perform one server-validated knife swing and damage the closest target in its arc."""
-    if not player["alive"] or player["weapon"] != "knife":
+    if not player["alive"] or not round_is_active() or player["weapon"] != "knife":
         return False
 
     direction_x = message.get("direction_x")
@@ -419,6 +429,7 @@ async def game_loop() -> None:
         elapsed = min(now - previous_tick_at, MAX_TICK_SECONDS)
         previous_tick_at = now
 
+        advance_round(now)
         advance_reloads(now)
         advance_melee_attacks(now)
         for player in players.values():
@@ -431,7 +442,7 @@ async def game_loop() -> None:
 
 def collect_weapon_pickup(player: dict[str, Any]) -> bool:
     """Equip a nearby weapon after a server-validated pickup request."""
-    if not player["alive"]:
+    if not player["alive"] or not round_is_active():
         return False
 
     for pickup in weapon_pickups.copy():
@@ -453,8 +464,8 @@ def reset_weapon_pickups() -> None:
     weapon_pickups.extend(create_initial_weapon_pickups())
 
 
-def reset_test_round() -> None:
-    """Restore the shared local-development world to a fresh round state."""
+def reset_round_world() -> None:
+    """Restore players, weapons, and projectiles to a fresh-round world state."""
     bullets.clear()
     reset_weapon_pickups()
     for player_number, player in enumerate(players.values()):
@@ -473,6 +484,69 @@ def reset_test_round() -> None:
         player["reload_ends_at"] = None
         player["hp"] = PLAYER_MAX_HP
         player["alive"] = True
+
+
+def start_round() -> None:
+    """Start a new server-authoritative round for every current player."""
+    reset_round_world()
+    round_state["phase"] = "active"
+    round_state["number"] += 1
+    round_state["winner_id"] = None
+    round_state["ends_at"] = None
+
+
+def reset_test_round() -> None:
+    """Reset the local-development round, respecting the minimum-player rule."""
+    reset_round_world()
+    round_state["winner_id"] = None
+    round_state["ends_at"] = None
+    if len(players) >= MIN_PLAYERS_TO_START_ROUND:
+        round_state["number"] += 1
+        round_state["phase"] = "active"
+    else:
+        round_state["phase"] = "waiting"
+
+
+def round_is_active() -> bool:
+    """Return whether game actions are currently permitted."""
+    return round_state["phase"] == "active"
+
+
+def get_round_snapshot(now: float) -> dict[str, Any]:
+    """Build the client-visible round status from server-owned state."""
+    ends_at = round_state["ends_at"]
+    remaining_seconds = max(0.0, ends_at - now) if isinstance(ends_at, float) else 0.0
+    return {
+        "phase": round_state["phase"],
+        "number": round_state["number"],
+        "winner_id": round_state["winner_id"],
+        "ends_in_seconds": remaining_seconds,
+    }
+
+
+def advance_round(now: float) -> None:
+    """Advance waiting, active, and ending phases using server time."""
+    if round_state["phase"] == "waiting":
+        if len(players) >= MIN_PLAYERS_TO_START_ROUND:
+            start_round()
+        return
+
+    if round_state["phase"] == "active":
+        living_player_ids = [player_id for player_id, player in players.items() if player["alive"]]
+        if len(living_player_ids) <= 1:
+            round_state["phase"] = "ending"
+            round_state["winner_id"] = living_player_ids[0] if living_player_ids else None
+            round_state["ends_at"] = now + ROUND_END_DELAY_SECONDS
+        return
+
+    if round_state["phase"] == "ending":
+        ends_at = round_state["ends_at"]
+        if isinstance(ends_at, float) and now >= ends_at:
+            round_state["phase"] = "waiting"
+            round_state["winner_id"] = None
+            round_state["ends_at"] = None
+            if len(players) >= MIN_PLAYERS_TO_START_ROUND:
+                start_round()
 
 
 def spawn_test_bot(owner_id: str) -> bool:
@@ -533,6 +607,75 @@ def respawn_test_bot(owner_id: str, message: dict[str, Any]) -> bool:
     return True
 
 
+def create_fill_bot() -> None:
+    """Add one server-owned stationary opponent at a random valid spawn position."""
+    for _ in range(20):
+        x = uniform(ARENA_MIN_X + PLAYER_RADIUS, ARENA_MAX_X - PLAYER_RADIUS)
+        y = uniform(ARENA_MIN_Y + PLAYER_RADIUS, ARENA_MAX_Y - PLAYER_RADIUS)
+        if not position_hits_cover(x, y, PLAYER_RADIUS) and all(
+            hypot(x - player["x"], y - player["y"]) > PLAYER_RADIUS * 3
+            for player in players.values()
+        ):
+            break
+    else:
+        x, y = 1120.0, 720.0
+
+    bot_id = f"fill-bot-{uuid4().hex[:6]}"
+    players[bot_id] = {
+        "id": bot_id,
+        "x": x,
+        "y": y,
+        "move_x": 0.0,
+        "move_y": 0.0,
+        "last_fire_at": float("-inf"),
+        "last_melee_at": float("-inf"),
+        "melee_started_at": None,
+        "melee_ends_at": None,
+        "melee_angle": 0.0,
+        "weapon": "fists",
+        "ammo_in_mag": 0,
+        "magazine_capacity": 0,
+        "reload_ends_at": None,
+        "hp": PLAYER_MAX_HP,
+        "alive": round_state["phase"] == "waiting",
+        "is_bot": True,
+        "owner_id": None,
+    }
+
+
+def remove_one_fill_bot() -> bool:
+    """Free one bot-filled slot so a real player can join the room."""
+    fill_bot_id = next(
+        (
+            player_id
+            for player_id, player in players.items()
+            if player["is_bot"] and player["owner_id"] is None
+        ),
+        None,
+    )
+    if fill_bot_id is None:
+        return False
+    players.pop(fill_bot_id)
+    return True
+
+
+def rebalance_fill_bots() -> None:
+    """Fill a solo human's room with bots, while preserving slots for real players."""
+    human_players = [player for player in players.values() if not player["is_bot"]]
+    if not human_players:
+        for player_id, player in players.copy().items():
+            if player["is_bot"]:
+                players.pop(player_id)
+        round_state["phase"] = "waiting"
+        round_state["winner_id"] = None
+        round_state["ends_at"] = None
+        return
+
+    if len(human_players) == 1:
+        while len(players) < MAX_PLAYERS:
+            create_fill_bot()
+
+
 def move_test_bot_to_pickup(owner_id: str, message: dict[str, Any]) -> bool:
     """Teleport one owned test bot to an available pickup for fast integration tests."""
     bot_id = message.get("player_id")
@@ -589,9 +732,11 @@ async def game_socket(websocket: WebSocket) -> None:
     player_id = uuid4().hex
     await websocket.accept()
     if len(players) >= MAX_PLAYERS:
-        await websocket.send_json({"type": "room_full", "max_players": MAX_PLAYERS})
-        await websocket.close(code=1013)
-        return
+        remove_one_fill_bot()
+        if len(players) >= MAX_PLAYERS:
+            await websocket.send_json({"type": "room_full", "max_players": MAX_PLAYERS})
+            await websocket.close(code=1013)
+            return
 
     active_connections.append(websocket)
     player_number = len(players)
@@ -611,10 +756,12 @@ async def game_socket(websocket: WebSocket) -> None:
         "magazine_capacity": 0,
         "reload_ends_at": None,
         "hp": PLAYER_MAX_HP,
-        "alive": True,
+        "alive": round_state["phase"] == "waiting",
         "is_bot": False,
         "owner_id": None,
     }
+
+    rebalance_fill_bots()
 
     await websocket.send_json(
         {
@@ -623,6 +770,7 @@ async def game_socket(websocket: WebSocket) -> None:
             "server_time": monotonic(),
         }
     )
+    advance_round(monotonic())
     await broadcast_world_state()
 
     try:
@@ -650,6 +798,7 @@ async def game_socket(websocket: WebSocket) -> None:
 
             if message.get("type") == "spawn_test_bot":
                 if spawn_test_bot(player_id):
+                    advance_round(monotonic())
                     await broadcast_world_state()
                 continue
 
@@ -691,5 +840,7 @@ async def game_socket(websocket: WebSocket) -> None:
         if websocket in active_connections:
             active_connections.remove(websocket)
         players.pop(player_id, None)
+        rebalance_fill_bots()
+        advance_round(monotonic())
         await broadcast_world_state()
 
