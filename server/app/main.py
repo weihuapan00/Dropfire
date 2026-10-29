@@ -70,6 +70,11 @@ INITIAL_WEAPON_PICKUPS = (
     ("pistol-1", "pistol", 1850.0, 460.0),
     ("rifle-1", "rifle", 1350.0, 1060.0),
 )
+COVER_WALLS = (
+    {"id": "cover-center", "x": 1600.0, "y": 720.0, "width": 84.0, "height": 340.0},
+    {"id": "cover-west", "x": 720.0, "y": 920.0, "width": 320.0, "height": 64.0},
+    {"id": "cover-east", "x": 1840.0, "y": 840.0, "width": 320.0, "height": 64.0},
+)
 
 
 def create_initial_weapon_pickups() -> list[dict[str, Any]]:
@@ -85,7 +90,7 @@ PLAYER_SPEED = 280.0
 PLAYER_RADIUS = 20.0
 PLAYER_MAX_HP = 100
 PICKUP_RADIUS = 24.0
-BULLET_RADIUS = 6.0
+BULLET_RADIUS = 4.0
 TEST_BOT_MOVE_DISTANCE = 48.0
 ARENA_MIN_X = 72.0
 ARENA_MAX_X = 2488.0
@@ -119,6 +124,7 @@ async def broadcast_world_state() -> None:
             }
             for player_id, player in players.items()
         ],
+        "covers": COVER_WALLS,
         "pickups": weapon_pickups,
         "bullets": [
             {
@@ -171,8 +177,13 @@ def advance_player_movement(player: dict[str, Any], elapsed: float) -> bool:
 
     distance = PLAYER_SPEED * elapsed
     previous_position = (player["x"], player["y"])
-    player["x"] = max(ARENA_MIN_X, min(ARENA_MAX_X, player["x"] + player["move_x"] * distance))
-    player["y"] = max(ARENA_MIN_Y, min(ARENA_MAX_Y, player["y"] + player["move_y"] * distance))
+    candidate_x = max(ARENA_MIN_X, min(ARENA_MAX_X, player["x"] + player["move_x"] * distance))
+    if not position_hits_cover(candidate_x, player["y"], PLAYER_RADIUS):
+        player["x"] = candidate_x
+
+    candidate_y = max(ARENA_MIN_Y, min(ARENA_MAX_Y, player["y"] + player["move_y"] * distance))
+    if not position_hits_cover(player["x"], candidate_y, PLAYER_RADIUS):
+        player["y"] = candidate_y
     return previous_position != (player["x"], player["y"])
 
 
@@ -359,6 +370,10 @@ def advance_bullets(elapsed: float) -> None:
             bullets.remove(bullet)
             continue
 
+        if bullet_hits_cover(bullet):
+            bullets.remove(bullet)
+            continue
+
         for target_id, target in players.items():
             if target_id == bullet["owner_id"] or not target["alive"]:
                 continue
@@ -367,6 +382,32 @@ def advance_bullets(elapsed: float) -> None:
                 apply_damage(target, bullet["damage"])
                 bullets.remove(bullet)
                 break
+
+
+def bullet_hits_cover(bullet: dict[str, Any]) -> bool:
+    """Return whether a bullet center has reached any static rectangular cover wall."""
+    for cover in COVER_WALLS:
+        half_width = cover["width"] / 2
+        half_height = cover["height"] / 2
+        if (
+            cover["x"] - half_width <= bullet["x"] <= cover["x"] + half_width
+            and cover["y"] - half_height <= bullet["y"] <= cover["y"] + half_height
+        ):
+            return True
+    return False
+
+
+def position_hits_cover(x: float, y: float, radius: float) -> bool:
+    """Return whether a player's collision circle overlaps any rectangular cover wall."""
+    for cover in COVER_WALLS:
+        half_width = cover["width"] / 2
+        half_height = cover["height"] / 2
+        if (
+            cover["x"] - half_width - radius <= x <= cover["x"] + half_width + radius
+            and cover["y"] - half_height - radius <= y <= cover["y"] + half_height + radius
+        ):
+            return True
+    return False
 
 
 async def game_loop() -> None:
@@ -417,7 +458,7 @@ def reset_test_round() -> None:
     bullets.clear()
     reset_weapon_pickups()
     for player_number, player in enumerate(players.values()):
-        player["x"] = 1180.0 + player_number * 75.0
+        player["x"] = 1120.0 + player_number * 75.0
         player["y"] = 720.0
         player["move_x"] = 0.0
         player["move_y"] = 0.0

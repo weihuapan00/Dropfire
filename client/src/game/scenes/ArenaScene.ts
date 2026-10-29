@@ -3,6 +3,7 @@ import Phaser from "phaser";
 import { GameSocket } from "../../network/GameSocket";
 
 const PLAYER_RADIUS = 20;
+const BULLET_RADIUS = 4;
 const WORLD_WIDTH = 2560;
 const WORLD_HEIGHT = 1440;
 const INTERPOLATION_AT_60_FPS = 0.2;
@@ -67,6 +68,14 @@ interface BulletState {
   weapon: "pistol" | "rifle";
 }
 
+interface CoverState {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 function isWeaponType(value: unknown): value is WeaponType {
   return typeof value === "string" && WEAPON_TYPES.some((weapon) => weapon === value);
 }
@@ -121,6 +130,21 @@ function isBulletState(value: unknown): value is BulletState {
   );
 }
 
+function isCoverState(value: unknown): value is CoverState {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const cover = value as Record<string, unknown>;
+  return (
+    typeof cover.id === "string" &&
+    typeof cover.x === "number" &&
+    typeof cover.y === "number" &&
+    typeof cover.width === "number" &&
+    typeof cover.height === "number"
+  );
+}
+
 export class ArenaScene extends Phaser.Scene {
   private readonly players = new Map<string, Phaser.GameObjects.Arc>();
   private readonly playerRenderTargets = new Map<string, Phaser.Math.Vector2>();
@@ -130,6 +154,7 @@ export class ArenaScene extends Phaser.Scene {
   private readonly meleeIndicators = new Map<string, Phaser.GameObjects.Graphics>();
   private readonly meleeProgress = new Map<string, number>();
   private readonly meleeAngles = new Map<string, number>();
+  private readonly covers = new Map<string, Phaser.GameObjects.Graphics>();
   private readonly pickups = new Map<string, Phaser.GameObjects.Container>();
   private readonly bullets = new Map<string, Phaser.GameObjects.Arc>();
   private readonly bulletRenderTargets = new Map<string, Phaser.Math.Vector2>();
@@ -179,10 +204,12 @@ export class ArenaScene extends Phaser.Scene {
       if (
         message.type === "world_state" &&
         Array.isArray(message.players) &&
+        Array.isArray(message.covers) &&
         Array.isArray(message.pickups) &&
         Array.isArray(message.bullets)
       ) {
         this.syncPlayers(message.players.filter(isPlayerState));
+        this.syncCovers(message.covers.filter(isCoverState));
         this.syncPickups(message.pickups.filter(isPickupState));
         this.syncBullets(message.bullets.filter(isBulletState));
       }
@@ -514,6 +541,43 @@ export class ArenaScene extends Phaser.Scene {
     }
   }
 
+  private syncCovers(serverCovers: CoverState[]): void {
+    const currentCoverIds = new Set(serverCovers.map((cover) => cover.id));
+
+    for (const coverState of serverCovers) {
+      let cover = this.covers.get(coverState.id);
+      if (!cover) {
+        cover = this.add.graphics().setDepth(2);
+        this.covers.set(coverState.id, cover);
+      }
+
+      cover.clear();
+      cover.fillStyle(0x34445b, 1);
+      cover.fillRoundedRect(
+        coverState.x - coverState.width / 2,
+        coverState.y - coverState.height / 2,
+        coverState.width,
+        coverState.height,
+        10,
+      );
+      cover.lineStyle(4, 0x8da2bd, 0.9);
+      cover.strokeRoundedRect(
+        coverState.x - coverState.width / 2,
+        coverState.y - coverState.height / 2,
+        coverState.width,
+        coverState.height,
+        10,
+      );
+    }
+
+    for (const [coverId, cover] of this.covers) {
+      if (!currentCoverIds.has(coverId)) {
+        cover.destroy();
+        this.covers.delete(coverId);
+      }
+    }
+  }
+
   private syncBullets(serverBullets: BulletState[]): void {
     const currentBulletIds = new Set(serverBullets.map((bullet) => bullet.id));
 
@@ -523,10 +587,11 @@ export class ArenaScene extends Phaser.Scene {
         bullet = this.add.circle(
           bulletState.x,
           bulletState.y,
-          6,
+          BULLET_RADIUS,
           BULLET_COLORS[bulletState.weapon],
         );
         bullet.setStrokeStyle(2, 0xffffff, 0.8);
+        bullet.setDepth(3);
         this.bullets.set(bulletState.id, bullet);
       }
 
