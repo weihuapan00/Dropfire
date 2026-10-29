@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
-from math import hypot, isfinite
+from math import atan2, hypot, isfinite
 from time import monotonic
 from typing import Any
 from uuid import uuid4
@@ -45,10 +45,26 @@ bullets: list[dict[str, Any]] = []
 MAX_PLAYERS = 4
 WEAPON_TYPES = {"fists", "knife", "pistol", "rifle"}
 RANGED_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
-    "pistol": {"damage": 25.0, "bullet_speed": 720.0, "cooldown_seconds": 0.35},
-    "rifle": {"damage": 15.0, "bullet_speed": 1080.0, "cooldown_seconds": 0.12},
+    "pistol": {
+        "damage": 25.0,
+        "bullet_speed": 720.0,
+        "bullet_lifetime_seconds": 0.75,
+        "cooldown_seconds": 0.35,
+    },
+    "rifle": {
+        "damage": 15.0,
+        "bullet_speed": 1080.0,
+        "bullet_lifetime_seconds": 1.75,
+        "cooldown_seconds": 0.12,
+    },
 }
 MAGAZINE_CAPACITIES = {"pistol": 12, "rifle": 30}
+RELOAD_DURATION_SECONDS = 1.2
+KNIFE_DAMAGE = 100.0
+KNIFE_REACH = 88.0
+KNIFE_MINIMUM_DOT_PRODUCT = 0.45
+KNIFE_COOLDOWN_SECONDS = 0.65
+MELEE_ATTACK_DURATION_SECONDS = 0.18
 INITIAL_WEAPON_PICKUPS = (
     ("knife-1", "knife", 760.0, 400.0),
     ("pistol-1", "pistol", 1850.0, 460.0),
@@ -67,9 +83,9 @@ def create_initial_weapon_pickups() -> list[dict[str, Any]]:
 weapon_pickups = create_initial_weapon_pickups()
 PLAYER_SPEED = 280.0
 PLAYER_RADIUS = 20.0
+PLAYER_MAX_HP = 100
 PICKUP_RADIUS = 24.0
 BULLET_RADIUS = 6.0
-BULLET_LIFETIME_SECONDS = 1.4
 TEST_BOT_MOVE_DISTANCE = 48.0
 ARENA_MIN_X = 72.0
 ARENA_MAX_X = 2488.0
@@ -82,6 +98,7 @@ MAX_TICK_SECONDS = 0.1
 
 async def broadcast_world_state() -> None:
     """Send the complete current player list to every connected browser."""
+    now = monotonic()
     message = {
         "type": "world_state",
         "players": [
@@ -92,6 +109,11 @@ async def broadcast_world_state() -> None:
                 "weapon": player["weapon"],
                 "ammo_in_mag": player["ammo_in_mag"],
                 "magazine_capacity": player["magazine_capacity"],
+                "reload_progress": get_reload_progress(player, now),
+                "melee_progress": get_melee_progress(player, now),
+                "melee_angle": player["melee_angle"],
+                "hp": player["hp"],
+                "alive": player["alive"],
                 "is_bot": player["is_bot"],
                 "owner_id": player["owner_id"],
             }
@@ -118,6 +140,9 @@ async def broadcast_world_state() -> None:
 
 def apply_move_intent(player: dict[str, Any], message: dict[str, Any]) -> bool:
     """Store one validated direction for the authoritative game loop to use."""
+    if not player["alive"]:
+        return False
+
     direction_x = message.get("direction_x")
     direction_y = message.get("direction_y")
     if (
@@ -141,7 +166,7 @@ def apply_move_intent(player: dict[str, Any], message: dict[str, Any]) -> bool:
 
 def advance_player_movement(player: dict[str, Any], elapsed: float) -> bool:
     """Move one player for one server tick using its last valid input direction."""
-    if player["move_x"] == 0 and player["move_y"] == 0:
+    if not player["alive"] or (player["move_x"] == 0 and player["move_y"] == 0):
         return False
 
     distance = PLAYER_SPEED * elapsed
@@ -153,6 +178,9 @@ def advance_player_movement(player: dict[str, Any], elapsed: float) -> bool:
 
 def fire_weapon(player: dict[str, Any], message: dict[str, Any]) -> bool:
     """Create one server-validated projectile for a ranged weapon."""
+    if not player["alive"] or player["reload_ends_at"] is not None:
+        return False
+
     direction_x = message.get("direction_x")
     direction_y = message.get("direction_y")
     if (
@@ -185,11 +213,133 @@ def fire_weapon(player: dict[str, Any], message: dict[str, Any]) -> bool:
             "y": player["y"] + normalized_y * start_distance,
             "velocity_x": normalized_x * settings["bullet_speed"],
             "velocity_y": normalized_y * settings["bullet_speed"],
-            "remaining_seconds": BULLET_LIFETIME_SECONDS,
+            "remaining_seconds": settings["bullet_lifetime_seconds"],
         }
     )
     player["last_fire_at"] = now
     player["ammo_in_mag"] -= 1
+    return True
+
+
+def reload_weapon(player: dict[str, Any]) -> bool:
+    """Start a delayed reload for a living player with a partly empty gun."""
+    if not player["alive"]:
+        return False
+
+    magazine_capacity = MAGAZINE_CAPACITIES.get(player["weapon"])
+    if (
+        magazine_capacity is None
+        or player["ammo_in_mag"] >= magazine_capacity
+        or player["reload_ends_at"] is not None
+    ):
+        return False
+
+    player["reload_ends_at"] = monotonic() + RELOAD_DURATION_SECONDS
+    return True
+
+
+def attack_with_knife(player: dict[str, Any], message: dict[str, Any]) -> bool:
+    """Perform one server-validated knife swing and damage the closest target in its arc."""
+    if not player["alive"] or player["weapon"] != "knife":
+        return False
+
+    direction_x = message.get("direction_x")
+    direction_y = message.get("direction_y")
+    if (
+        not isinstance(direction_x, (int, float))
+        or not isinstance(direction_y, (int, float))
+        or not isfinite(direction_x)
+        or not isfinite(direction_y)
+    ):
+        return False
+
+    direction_length = hypot(direction_x, direction_y)
+    if direction_length == 0:
+        return False
+
+    now = monotonic()
+    if now - player["last_melee_at"] < KNIFE_COOLDOWN_SECONDS:
+        return False
+
+    normalized_x = direction_x / direction_length
+    normalized_y = direction_y / direction_length
+    player["last_melee_at"] = now
+    player["melee_started_at"] = now
+    player["melee_ends_at"] = now + MELEE_ATTACK_DURATION_SECONDS
+    player["melee_angle"] = atan2(normalized_y, normalized_x)
+
+    closest_target: dict[str, Any] | None = None
+    closest_distance = KNIFE_REACH
+    for target_id, target in players.items():
+        if target_id == player["id"] or not target["alive"]:
+            continue
+
+        offset_x = target["x"] - player["x"]
+        offset_y = target["y"] - player["y"]
+        distance = hypot(offset_x, offset_y)
+        if distance == 0 or distance > closest_distance:
+            continue
+
+        dot_product = normalized_x * offset_x / distance + normalized_y * offset_y / distance
+        if dot_product >= KNIFE_MINIMUM_DOT_PRODUCT:
+            closest_target = target
+            closest_distance = distance
+
+    if closest_target:
+        apply_damage(closest_target, KNIFE_DAMAGE)
+    return True
+
+
+def get_reload_progress(player: dict[str, Any], now: float) -> float:
+    """Return a normalized 0-to-1 reload progress for the client animation."""
+    reload_ends_at = player["reload_ends_at"]
+    if reload_ends_at is None:
+        return 0.0
+    return max(0.0, min(1.0, 1 - (reload_ends_at - now) / RELOAD_DURATION_SECONDS))
+
+
+def get_melee_progress(player: dict[str, Any], now: float) -> float:
+    """Return a normalized animation progress while the current melee swing is active."""
+    melee_ends_at = player["melee_ends_at"]
+    if melee_ends_at is None:
+        return 0.0
+    return max(0.0, min(1.0, 1 - (melee_ends_at - now) / MELEE_ATTACK_DURATION_SECONDS))
+
+
+def advance_reloads(now: float) -> None:
+    """Complete every reload whose server-controlled finish time has arrived."""
+    for player in players.values():
+        reload_ends_at = player["reload_ends_at"]
+        if reload_ends_at is None or now < reload_ends_at:
+            continue
+
+        magazine_capacity = MAGAZINE_CAPACITIES.get(player["weapon"])
+        if player["alive"] and magazine_capacity is not None:
+            player["magazine_capacity"] = magazine_capacity
+            player["ammo_in_mag"] = magazine_capacity
+        player["reload_ends_at"] = None
+
+
+def advance_melee_attacks(now: float) -> None:
+    """Clear finished melee animation state after the server has published it."""
+    for player in players.values():
+        melee_ends_at = player["melee_ends_at"]
+        if melee_ends_at is not None and now >= melee_ends_at:
+            player["melee_ends_at"] = None
+
+
+def apply_damage(player: dict[str, Any], damage: float) -> bool:
+    """Apply server-authoritative damage and eliminate a player at zero HP."""
+    if not player["alive"]:
+        return False
+
+    player["hp"] = max(0, player["hp"] - damage)
+    if player["hp"] == 0:
+        player["alive"] = False
+        player["move_x"] = 0.0
+        player["move_y"] = 0.0
+        player["reload_ends_at"] = None
+        player["melee_ends_at"] = None
     return True
 
 
@@ -207,6 +357,16 @@ def advance_bullets(elapsed: float) -> None:
         )
         if bullet["remaining_seconds"] <= 0 or outside_arena:
             bullets.remove(bullet)
+            continue
+
+        for target_id, target in players.items():
+            if target_id == bullet["owner_id"] or not target["alive"]:
+                continue
+
+            if hypot(bullet["x"] - target["x"], bullet["y"] - target["y"]) <= BULLET_RADIUS + PLAYER_RADIUS:
+                apply_damage(target, bullet["damage"])
+                bullets.remove(bullet)
+                break
 
 
 async def game_loop() -> None:
@@ -218,9 +378,10 @@ async def game_loop() -> None:
         elapsed = min(now - previous_tick_at, MAX_TICK_SECONDS)
         previous_tick_at = now
 
+        advance_reloads(now)
+        advance_melee_attacks(now)
         for player in players.values():
-            if advance_player_movement(player, elapsed):
-                collect_weapon_pickup(player)
+            advance_player_movement(player, elapsed)
         advance_bullets(elapsed)
 
         if active_connections:
@@ -228,13 +389,17 @@ async def game_loop() -> None:
 
 
 def collect_weapon_pickup(player: dict[str, Any]) -> bool:
-    """Equip the first weapon pickup the player touches and remove it from the arena."""
+    """Equip a nearby weapon after a server-validated pickup request."""
+    if not player["alive"]:
+        return False
+
     for pickup in weapon_pickups.copy():
         distance_to_pickup = hypot(player["x"] - pickup["x"], player["y"] - pickup["y"])
         if distance_to_pickup <= PLAYER_RADIUS + PICKUP_RADIUS:
             player["weapon"] = pickup["weapon"]
             player["magazine_capacity"] = MAGAZINE_CAPACITIES.get(pickup["weapon"], 0)
             player["ammo_in_mag"] = player["magazine_capacity"]
+            player["reload_ends_at"] = None
             weapon_pickups.remove(pickup)
             return True
 
@@ -245,6 +410,28 @@ def reset_weapon_pickups() -> None:
     """Restore every map weapon for the local development test panel."""
     weapon_pickups.clear()
     weapon_pickups.extend(create_initial_weapon_pickups())
+
+
+def reset_test_round() -> None:
+    """Restore the shared local-development world to a fresh round state."""
+    bullets.clear()
+    reset_weapon_pickups()
+    for player_number, player in enumerate(players.values()):
+        player["x"] = 1180.0 + player_number * 75.0
+        player["y"] = 720.0
+        player["move_x"] = 0.0
+        player["move_y"] = 0.0
+        player["last_fire_at"] = float("-inf")
+        player["last_melee_at"] = float("-inf")
+        player["melee_started_at"] = None
+        player["melee_ends_at"] = None
+        player["melee_angle"] = 0.0
+        player["weapon"] = "fists"
+        player["ammo_in_mag"] = 0
+        player["magazine_capacity"] = 0
+        player["reload_ends_at"] = None
+        player["hp"] = PLAYER_MAX_HP
+        player["alive"] = True
 
 
 def spawn_test_bot(owner_id: str) -> bool:
@@ -261,12 +448,47 @@ def spawn_test_bot(owner_id: str) -> bool:
         "move_x": 0.0,
         "move_y": 0.0,
         "last_fire_at": float("-inf"),
+        "last_melee_at": float("-inf"),
+        "melee_started_at": None,
+        "melee_ends_at": None,
+        "melee_angle": 0.0,
         "weapon": "fists",
         "ammo_in_mag": 0,
         "magazine_capacity": 0,
+        "reload_ends_at": None,
+        "hp": PLAYER_MAX_HP,
+        "alive": True,
         "is_bot": True,
         "owner_id": owner_id,
     }
+    return True
+
+
+def respawn_test_bot(owner_id: str, message: dict[str, Any]) -> bool:
+    """Reset one owned test bot so local development can continue after elimination."""
+    bot_id = message.get("player_id")
+    if not isinstance(bot_id, str):
+        return False
+
+    bot = players.get(bot_id)
+    if not bot or not bot["is_bot"] or bot["owner_id"] != owner_id:
+        return False
+
+    bot["x"] = 1225.0
+    bot["y"] = 720.0
+    bot["move_x"] = 0.0
+    bot["move_y"] = 0.0
+    bot["last_fire_at"] = float("-inf")
+    bot["last_melee_at"] = float("-inf")
+    bot["melee_started_at"] = None
+    bot["melee_ends_at"] = None
+    bot["melee_angle"] = 0.0
+    bot["weapon"] = "fists"
+    bot["ammo_in_mag"] = 0
+    bot["magazine_capacity"] = 0
+    bot["reload_ends_at"] = None
+    bot["hp"] = PLAYER_MAX_HP
+    bot["alive"] = True
     return True
 
 
@@ -279,7 +501,7 @@ def move_test_bot_to_pickup(owner_id: str, message: dict[str, Any]) -> bool:
 
     bot = players.get(bot_id)
     pickup = next((item for item in weapon_pickups if item["id"] == pickup_id), None)
-    if not bot or not bot["is_bot"] or bot["owner_id"] != owner_id or not pickup:
+    if not bot or not bot["alive"] or not bot["is_bot"] or bot["owner_id"] != owner_id or not pickup:
         return False
 
     bot["x"] = pickup["x"]
@@ -301,7 +523,7 @@ def move_test_bot(owner_id: str, message: dict[str, Any]) -> bool:
 
     bot = players.get(bot_id)
     direction_length = hypot(direction_x, direction_y)
-    if not bot or not bot["is_bot"] or bot["owner_id"] != owner_id or direction_length == 0:
+    if not bot or not bot["alive"] or not bot["is_bot"] or bot["owner_id"] != owner_id or direction_length == 0:
         return False
 
     bot["x"] = max(
@@ -339,9 +561,16 @@ async def game_socket(websocket: WebSocket) -> None:
         "move_x": 0.0,
         "move_y": 0.0,
         "last_fire_at": float("-inf"),
+        "last_melee_at": float("-inf"),
+        "melee_started_at": None,
+        "melee_ends_at": None,
+        "melee_angle": 0.0,
         "weapon": "fists",
         "ammo_in_mag": 0,
         "magazine_capacity": 0,
+        "reload_ends_at": None,
+        "hp": PLAYER_MAX_HP,
+        "alive": True,
         "is_bot": False,
         "owner_id": None,
     }
@@ -366,13 +595,35 @@ async def game_socket(websocket: WebSocket) -> None:
                 fire_weapon(players[player_id], message)
                 continue
 
+            if message.get("type") == "melee_intent":
+                attack_with_knife(players[player_id], message)
+                continue
+
+            if message.get("type") == "reload_intent":
+                reload_weapon(players[player_id])
+                continue
+
+            if message.get("type") == "pickup_intent":
+                collect_weapon_pickup(players[player_id])
+                continue
+
             if message.get("type") == "spawn_test_bot":
                 if spawn_test_bot(player_id):
                     await broadcast_world_state()
                 continue
 
+            if message.get("type") == "debug_respawn_bot":
+                if respawn_test_bot(player_id, message):
+                    await broadcast_world_state()
+                continue
+
             if message.get("type") == "debug_reset_weapon_pickups":
                 reset_weapon_pickups()
+                await broadcast_world_state()
+                continue
+
+            if message.get("type") == "debug_reset_test_round":
+                reset_test_round()
                 await broadcast_world_state()
                 continue
 

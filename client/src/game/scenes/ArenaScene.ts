@@ -8,6 +8,7 @@ const WORLD_HEIGHT = 1440;
 const INTERPOLATION_AT_60_FPS = 0.2;
 const BULLET_INTERPOLATION_AT_60_FPS = 0.55;
 const AUTOMATIC_FIRE_INTENT_INTERVAL_MS = 120;
+const RELOAD_RING_RADIUS = 31;
 const WEAPON_TYPES = ["fists", "knife", "pistol", "rifle"] as const;
 
 type WeaponType = (typeof WEAPON_TYPES)[number];
@@ -45,6 +46,11 @@ interface PlayerState {
   weapon: WeaponType;
   ammo_in_mag: number;
   magazine_capacity: number;
+  reload_progress: number;
+  melee_progress: number;
+  melee_angle: number;
+  hp: number;
+  alive: boolean;
 }
 
 interface PickupState {
@@ -77,7 +83,12 @@ function isPlayerState(value: unknown): value is PlayerState {
     typeof player.y === "number" &&
     isWeaponType(player.weapon) &&
     typeof player.ammo_in_mag === "number" &&
-    typeof player.magazine_capacity === "number"
+    typeof player.magazine_capacity === "number" &&
+    typeof player.reload_progress === "number" &&
+    typeof player.melee_progress === "number" &&
+    typeof player.melee_angle === "number" &&
+    typeof player.hp === "number" &&
+    typeof player.alive === "boolean"
   );
 }
 
@@ -114,12 +125,19 @@ export class ArenaScene extends Phaser.Scene {
   private readonly players = new Map<string, Phaser.GameObjects.Arc>();
   private readonly playerRenderTargets = new Map<string, Phaser.Math.Vector2>();
   private readonly weaponLabels = new Map<string, Phaser.GameObjects.Text>();
+  private readonly reloadIndicators = new Map<string, Phaser.GameObjects.Graphics>();
+  private readonly reloadProgress = new Map<string, number>();
+  private readonly meleeIndicators = new Map<string, Phaser.GameObjects.Graphics>();
+  private readonly meleeProgress = new Map<string, number>();
+  private readonly meleeAngles = new Map<string, number>();
   private readonly pickups = new Map<string, Phaser.GameObjects.Container>();
   private readonly bullets = new Map<string, Phaser.GameObjects.Arc>();
   private readonly bulletRenderTargets = new Map<string, Phaser.Math.Vector2>();
   private localPlayerId: string | null = null;
   private localPlayer: Phaser.GameObjects.Arc | null = null;
   private localWeapon: WeaponType = "fists";
+  private localPlayerIsAlive = true;
+  private localPlayerIsReloading = false;
   private cameraIsFollowingLocalPlayer = false;
   private automaticFireIsHeld = false;
   private nextAutomaticFireAt = 0;
@@ -129,6 +147,8 @@ export class ArenaScene extends Phaser.Scene {
   private ammoHud!: Phaser.GameObjects.Text;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private movementKeys!: Record<"up" | "down" | "left" | "right", Phaser.Input.Keyboard.Key>;
+  private reloadKey!: Phaser.Input.Keyboard.Key;
+  private pickupKey!: Phaser.Input.Keyboard.Key;
 
   constructor(private readonly gameSocket: GameSocket) {
     super("arena");
@@ -140,7 +160,7 @@ export class ArenaScene extends Phaser.Scene {
 
     this.aimLine = this.add.graphics();
     this.ammoHud = this.add
-      .text(18, 18, "Weapon: FISTS\nAmmo: --", {
+      .text(18, 18, "Weapon: FISTS\nAmmo: --\nHP: 100", {
         backgroundColor: "#111a27",
         color: "#f4f7fb",
         fontFamily: "system-ui, sans-serif",
@@ -180,6 +200,8 @@ export class ArenaScene extends Phaser.Scene {
       left: Phaser.Input.Keyboard.KeyCodes.A,
       right: Phaser.Input.Keyboard.KeyCodes.D,
     }) as Record<"up" | "down" | "left" | "right", Phaser.Input.Keyboard.Key>;
+    this.reloadKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
+    this.pickupKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
 
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
       this.fireTowardPointer(pointer);
@@ -193,7 +215,7 @@ export class ArenaScene extends Phaser.Scene {
     });
 
     this.add
-      .text(640, 680, "Move: WASD / arrows  •  Pistol: click  •  Rifle: hold left click", {
+      .text(640, 680, "Move: WASD / arrows  •  E: pick up  •  R: reload  •  Knife: click  •  Pistol: click  •  Rifle: hold left click", {
         color: "#96a3b6",
         fontFamily: "system-ui, sans-serif",
         fontSize: "18px",
@@ -207,8 +229,18 @@ export class ArenaScene extends Phaser.Scene {
     this.interpolatePlayers(delta);
     this.interpolateBullets(delta);
 
-    if (!this.localPlayer) {
+    if (!this.localPlayer || !this.localPlayerIsAlive) {
+      this.automaticFireIsHeld = false;
+      this.aimLine.clear();
       return;
+    }
+
+    if (Phaser.Input.Keyboard.JustDown(this.reloadKey)) {
+      this.gameSocket.send({ type: "reload_intent" });
+    }
+
+    if (Phaser.Input.Keyboard.JustDown(this.pickupKey)) {
+      this.gameSocket.send({ type: "pickup_intent" });
     }
 
     if (
@@ -272,7 +304,7 @@ export class ArenaScene extends Phaser.Scene {
         this.weaponLabels.set(
           playerState.id,
           this.add
-            .text(playerState.x, playerState.y - 42, "", {
+            .text(playerState.x, playerState.y - 54, "", {
               color: isLocalPlayer ? "#d8fff1" : "#ffe2a1",
               fontFamily: "system-ui, sans-serif",
               fontSize: "14px",
@@ -280,6 +312,17 @@ export class ArenaScene extends Phaser.Scene {
             })
             .setOrigin(0.5),
         );
+      }
+
+      const isLocalPlayer = playerState.id === this.localPlayerId;
+      if (playerState.alive) {
+        player.setFillStyle(isLocalPlayer ? 0x5bf2bd : 0xf5c55b);
+        player.setStrokeStyle(4, isLocalPlayer ? 0xd8fff1 : 0xffe2a1, 0.85);
+        player.setAlpha(1);
+      } else {
+        player.setFillStyle(0x667085);
+        player.setStrokeStyle(4, 0xaab2c0, 0.65);
+        player.setAlpha(0.6);
       }
 
       const target = this.playerRenderTargets.get(playerState.id);
@@ -292,9 +335,17 @@ export class ArenaScene extends Phaser.Scene {
         );
       }
       this.updateWeaponLabel(playerState);
+      this.reloadProgress.set(playerState.id, playerState.reload_progress);
+      this.meleeProgress.set(playerState.id, playerState.melee_progress);
+      this.meleeAngles.set(playerState.id, playerState.melee_angle);
       if (playerState.id === this.localPlayerId) {
         this.localPlayer = player;
         this.localWeapon = playerState.weapon;
+        this.localPlayerIsAlive = playerState.alive;
+        this.localPlayerIsReloading = playerState.reload_progress > 0;
+        if (this.localPlayerIsReloading) {
+          this.automaticFireIsHeld = false;
+        }
         if (FIRE_MODES[this.localWeapon] !== "automatic") {
           this.automaticFireIsHeld = false;
         }
@@ -312,6 +363,13 @@ export class ArenaScene extends Phaser.Scene {
         this.playerRenderTargets.delete(playerId);
         this.weaponLabels.get(playerId)?.destroy();
         this.weaponLabels.delete(playerId);
+        this.reloadIndicators.get(playerId)?.destroy();
+        this.reloadIndicators.delete(playerId);
+        this.reloadProgress.delete(playerId);
+        this.meleeIndicators.get(playerId)?.destroy();
+        this.meleeIndicators.delete(playerId);
+        this.meleeProgress.delete(playerId);
+        this.meleeAngles.delete(playerId);
         if (playerId === this.localPlayerId) {
           this.localPlayer = null;
         }
@@ -329,12 +387,17 @@ export class ArenaScene extends Phaser.Scene {
     const ammo = playerState.magazine_capacity > 0
       ? ` · ${playerState.ammo_in_mag}/${playerState.magazine_capacity}`
       : "";
-    label.setText(`${owner}${WEAPON_LABELS[playerState.weapon]}${ammo}`);
+    const combatStatus = playerState.alive ? `HP ${playerState.hp}` : "ELIMINATED";
+    const reloadStatus = playerState.reload_progress > 0 ? "\nRELOADING" : "";
+    label.setText(`${owner}${WEAPON_LABELS[playerState.weapon]}${ammo}\n${combatStatus}${reloadStatus}`);
     if (playerState.id === this.localPlayerId) {
       const ammoHudValue = playerState.magazine_capacity > 0
         ? `${playerState.ammo_in_mag} / ${playerState.magazine_capacity}`
         : "--";
-      this.ammoHud.setText(`Weapon: ${WEAPON_LABELS[playerState.weapon]}\nAmmo: ${ammoHudValue}`);
+      const hpHudValue = playerState.alive ? `${playerState.hp}` : "ELIMINATED";
+      this.ammoHud.setText(
+        `Weapon: ${WEAPON_LABELS[playerState.weapon]}\nAmmo: ${ammoHudValue}\nHP: ${hpHudValue}${reloadStatus}`,
+      );
     }
   }
 
@@ -352,8 +415,59 @@ export class ArenaScene extends Phaser.Scene {
 
       player.x = Phaser.Math.Linear(player.x, target.x, interpolationFactor);
       player.y = Phaser.Math.Linear(player.y, target.y, interpolationFactor);
-      this.weaponLabels.get(playerId)?.setPosition(player.x, player.y - 42);
+      this.weaponLabels.get(playerId)?.setPosition(player.x, player.y - 54);
+      this.drawReloadIndicator(playerId, player);
+      this.drawMeleeIndicator(playerId, player);
     }
+  }
+
+  private drawReloadIndicator(playerId: string, player: Phaser.GameObjects.Arc): void {
+    const progress = this.reloadProgress.get(playerId) ?? 0;
+    let indicator = this.reloadIndicators.get(playerId);
+    if (progress <= 0) {
+      indicator?.clear();
+      return;
+    }
+
+    if (!indicator) {
+      indicator = this.add.graphics().setDepth(2);
+      this.reloadIndicators.set(playerId, indicator);
+    }
+
+    indicator.clear();
+    indicator.lineStyle(4, 0x7ed7ff, 0.95);
+    indicator.beginPath();
+    indicator.arc(
+      player.x,
+      player.y,
+      RELOAD_RING_RADIUS,
+      -Math.PI / 2,
+      -Math.PI / 2 + Math.PI * 2 * progress,
+      false,
+    );
+    indicator.strokePath();
+  }
+
+  private drawMeleeIndicator(playerId: string, player: Phaser.GameObjects.Arc): void {
+    const progress = this.meleeProgress.get(playerId) ?? 0;
+    let indicator = this.meleeIndicators.get(playerId);
+    if (progress <= 0) {
+      indicator?.clear();
+      return;
+    }
+
+    if (!indicator) {
+      indicator = this.add.graphics().setDepth(3);
+      this.meleeIndicators.set(playerId, indicator);
+    }
+
+    const angle = this.meleeAngles.get(playerId) ?? 0;
+    const arcStart = angle - 1.1 + progress * 1.2;
+    indicator.clear();
+    indicator.lineStyle(7, 0xf8f1d2, 0.9);
+    indicator.beginPath();
+    indicator.arc(player.x, player.y, 56, arcStart, arcStart + 1.15, false);
+    indicator.strokePath();
   }
 
   private syncPickups(serverPickups: PickupState[]): void {
@@ -495,7 +609,7 @@ export class ArenaScene extends Phaser.Scene {
 
   private fireTowardPointer(pointer: Phaser.Input.Pointer): void {
     const player = this.localPlayer;
-    if (!player) {
+    if (!player || !this.localPlayerIsAlive || this.localPlayerIsReloading) {
       return;
     }
 
@@ -503,6 +617,15 @@ export class ArenaScene extends Phaser.Scene {
     const directionX = this.pointerWorldPosition.x - player.x;
     const directionY = this.pointerWorldPosition.y - player.y;
     if (directionX === 0 && directionY === 0) {
+      return;
+    }
+
+    if (this.localWeapon === "knife") {
+      this.gameSocket.send({
+        type: "melee_intent",
+        direction_x: directionX,
+        direction_y: directionY,
+      });
       return;
     }
 

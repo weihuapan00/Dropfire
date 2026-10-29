@@ -34,7 +34,7 @@ app.innerHTML = `
 
       <aside class="panel">
         <h2>Find a weapon</h2>
-        <p>Everyone starts with fists. Walk into a knife, pistol, or rifle pickup to equip it before another player does.</p>
+        <p>Everyone starts with fists. Stand near a knife, pistol, or rifle pickup and press E to equip it before another player does.</p>
 
         <div class="key-grid" aria-label="WASD movement keys">
           <span class="key">W</span>
@@ -52,6 +52,8 @@ app.innerHTML = `
           <h2>Test panel</h2>
           <p>Create a server-side test player, then send it to an available pickup without opening another browser.</p>
           <button class="test-button" id="spawn-test-bot" type="button">Add test player</button>
+          <button class="test-button" id="respawn-test-bot" type="button">Respawn selected test player</button>
+          <button class="test-button" id="reset-test-round" type="button">Reset test round</button>
           <button class="test-button" id="refill-weapons" type="button">Refill weapons</button>
           <label class="test-label" for="test-bot-select">Control</label>
           <select class="test-select" id="test-bot-select" disabled>
@@ -78,6 +80,8 @@ const statusElement = document.querySelector<HTMLElement>("#server-status");
 const statusText = document.querySelector<HTMLElement>("#server-status-text");
 const playerIdElement = document.querySelector<HTMLElement>("#player-id");
 const spawnTestBotButton = document.querySelector<HTMLButtonElement>("#spawn-test-bot");
+const respawnTestBotButton = document.querySelector<HTMLButtonElement>("#respawn-test-bot");
+const resetTestRoundButton = document.querySelector<HTMLButtonElement>("#reset-test-round");
 const refillWeaponsButton = document.querySelector<HTMLButtonElement>("#refill-weapons");
 const testBotSelect = document.querySelector<HTMLSelectElement>("#test-bot-select");
 const pickupButtons = document.querySelectorAll<HTMLButtonElement>("[data-pickup-id]");
@@ -86,6 +90,7 @@ const botMoveButtons = document.querySelectorAll<HTMLButtonElement>("[data-bot-x
 interface TestPlayerState {
   id: string;
   weapon: string;
+  alive: boolean;
   is_bot: boolean;
   owner_id: string | null;
 }
@@ -101,6 +106,7 @@ function isTestPlayerState(value: unknown): value is TestPlayerState {
   return (
     typeof player.id === "string" &&
     typeof player.weapon === "string" &&
+    typeof player.alive === "boolean" &&
     typeof player.is_bot === "boolean" &&
     (typeof player.owner_id === "string" || player.owner_id === null)
   );
@@ -124,7 +130,8 @@ function renderTestBots(players: TestPlayerState[]): void {
   }
 
   for (const [index, bot] of ownedBots.entries()) {
-    testBotSelect.add(new Option(`Test player ${index + 1} · ${bot.weapon}`, bot.id));
+    const status = bot.alive ? bot.weapon : "ELIMINATED";
+    testBotSelect.add(new Option(`Test player ${index + 1} · ${status}`, bot.id));
   }
   testBotSelect.disabled = false;
   testBotSelect.value = ownedBots.some((bot) => bot.id === previousSelection)
@@ -167,6 +174,15 @@ gameSocket.onMessage((message) => {
   }
 });
 spawnTestBotButton?.addEventListener("click", () => gameSocket.send({ type: "spawn_test_bot" }));
+respawnTestBotButton?.addEventListener("click", () => {
+  const playerId = testBotSelect?.value;
+  if (playerId) {
+    gameSocket.send({ type: "debug_respawn_bot", player_id: playerId });
+  }
+});
+resetTestRoundButton?.addEventListener("click", () =>
+  gameSocket.send({ type: "debug_reset_test_round" }),
+);
 refillWeaponsButton?.addEventListener("click", () =>
   gameSocket.send({ type: "debug_reset_weapon_pickups" }),
 );
