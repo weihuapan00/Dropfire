@@ -37,6 +37,7 @@ from .state import (
     bullets,
     create_initial_weapon_pickups,
     current_room,
+    hit_events,
     players,
     round_state,
     weapon_pickups,
@@ -202,7 +203,7 @@ def attack_with_melee(player: dict[str, Any], message: dict[str, Any]) -> bool:
             closest_distance = distance
 
     if closest_target:
-        apply_damage(closest_target, melee_settings["damage"], player["id"])
+        apply_damage(closest_target, melee_settings["damage"], player["id"], player["weapon"])
     return True
 
 
@@ -257,7 +258,7 @@ def get_spawn_protection_ends_in_seconds(player: dict[str, Any], now: float) -> 
     return max(0.0, invulnerable_until - now) if isinstance(invulnerable_until, float) else 0.0
 
 
-def apply_damage(player: dict[str, Any], damage: float, attacker_id: str) -> bool:
+def apply_damage(player: dict[str, Any], damage: float, attacker_id: str, weapon: str | None = None) -> bool:
     """Apply damage, then award damage and a kill using authoritative server state."""
     if not player["alive"] or not player["connected"]:
         return False
@@ -266,9 +267,22 @@ def apply_damage(player: dict[str, Any], damage: float, attacker_id: str) -> boo
 
     hp_before = player["hp"]
     player["hp"] = max(0, hp_before - damage)
+    damage_dealt = hp_before - player["hp"]
     attacker = players.get(attacker_id)
     if attacker is not None and attacker_id != player["id"]:
-        attacker["damage_dealt"] += hp_before - player["hp"]
+        attacker["damage_dealt"] += damage_dealt
+        if damage_dealt > 0:
+            hit_events.append(
+                {
+                    "attacker_id": attacker_id,
+                    "target_id": player["id"],
+                    "damage": damage_dealt,
+                    "weapon": weapon or "fists",
+                    "x": player["x"],
+                    "y": player["y"],
+                    "killed": player["hp"] == 0,
+                }
+            )
     if player["hp"] == 0:
         player["alive"] = False
         player["move_x"] = 0.0
@@ -306,7 +320,7 @@ def advance_bullets(elapsed: float) -> None:
                 continue
 
             if hypot(bullet["x"] - target["x"], bullet["y"] - target["y"]) <= BULLET_RADIUS + PLAYER_RADIUS:
-                apply_damage(target, bullet["damage"], bullet["owner_id"])
+                apply_damage(target, bullet["damage"], bullet["owner_id"], bullet["weapon"])
                 bullets.remove(bullet)
                 break
 

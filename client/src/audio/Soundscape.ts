@@ -66,6 +66,40 @@ export class Soundscape {
     }
   }
 
+  playHitMarker(): void {
+    const context = this.getContext();
+    if (!context || context.state !== "running") return;
+
+    const now = context.currentTime;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = "square";
+    oscillator.frequency.setValueAtTime(880, now);
+    oscillator.frequency.exponentialRampToValueAtTime(440, now + 0.05);
+    gain.gain.setValueAtTime(0.025, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.06);
+  }
+
+  playHurt(): void {
+    const context = this.getContext();
+    if (!context || context.state !== "running") return;
+
+    const now = context.currentTime;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = "sawtooth";
+    oscillator.frequency.setValueAtTime(160, now);
+    oscillator.frequency.exponentialRampToValueAtTime(50, now + 0.12);
+    gain.gain.setValueAtTime(0.05, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.14);
+  }
+
   private getContext(): AudioContext | null {
     if (this.context) return this.context;
     const AudioContextConstructor = window.AudioContext

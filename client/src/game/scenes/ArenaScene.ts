@@ -94,6 +94,16 @@ interface BulletState {
   weapon: "pistol" | "rifle";
 }
 
+interface HitEvent {
+  attacker_id: string;
+  target_id: string;
+  damage: number;
+  weapon: WeaponType;
+  x: number;
+  y: number;
+  killed: boolean;
+}
+
 interface CoverState {
   id: string;
   x: number;
@@ -168,6 +178,23 @@ function isBulletState(value: unknown): value is BulletState {
     typeof bullet.x === "number" &&
     typeof bullet.y === "number" &&
     (bullet.weapon === "pistol" || bullet.weapon === "rifle")
+  );
+}
+
+function isHitEvent(value: unknown): value is HitEvent {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const hit = value as Record<string, unknown>;
+  return (
+    typeof hit.attacker_id === "string"
+    && typeof hit.target_id === "string"
+    && typeof hit.damage === "number"
+    && isWeaponType(hit.weapon)
+    && typeof hit.x === "number"
+    && typeof hit.y === "number"
+    && typeof hit.killed === "boolean"
   );
 }
 
@@ -343,7 +370,8 @@ export class ArenaScene extends Phaser.Scene {
         Array.isArray(message.players) &&
         Array.isArray(message.covers) &&
         Array.isArray(message.pickups) &&
-        Array.isArray(message.bullets)
+        Array.isArray(message.bullets) &&
+        Array.isArray(message.hits)
       ) {
         this.syncRound(message.round);
         this.syncPlayers(message.players.filter(isPlayerState));
@@ -353,6 +381,7 @@ export class ArenaScene extends Phaser.Scene {
         }
         this.syncPickups(message.pickups.filter(isPickupState));
         this.syncBullets(message.bullets.filter(isBulletState));
+        this.syncHits(message.hits.filter(isHitEvent));
       }
     });
 
@@ -1013,6 +1042,125 @@ export class ArenaScene extends Phaser.Scene {
       bullet.x = Phaser.Math.Linear(bullet.x, target.x, interpolationFactor);
       bullet.y = Phaser.Math.Linear(bullet.y, target.y, interpolationFactor);
     }
+  }
+
+  private syncHits(hits: HitEvent[]): void {
+    for (const hit of hits) {
+      this.spawnHitSpark(hit.x, hit.y);
+      this.spawnDamageNumber(hit.x, hit.y, hit.damage);
+
+      if (hit.attacker_id === this.localPlayerId) {
+        this.showHitMarker();
+        soundscape.playHitMarker();
+      }
+      if (hit.target_id === this.localPlayerId) {
+        this.showHurtFlash();
+        soundscape.playHurt();
+      }
+      if (hit.killed) {
+        this.showKillMessage(hit);
+      }
+    }
+  }
+
+  private spawnHitSpark(x: number, y: number): void {
+    const spark = this.add.circle(x, y, 10, 0xffffff);
+    spark.setStrokeStyle(3, 0xffd166, 1);
+    spark.setDepth(30);
+    this.tweens.add({
+      targets: spark,
+      scaleX: 3.2,
+      scaleY: 3.2,
+      alpha: 0,
+      duration: 180,
+      onComplete: () => spark.destroy(),
+    });
+  }
+
+  private spawnDamageNumber(x: number, y: number, damage: number): void {
+    const label = this.add.text(x, y - 34, `-${Math.round(damage)}`, {
+      fontFamily: "system-ui, sans-serif",
+      fontSize: "20px",
+      fontStyle: "bold",
+      color: "#ffd166",
+    }).setOrigin(0.5).setDepth(31);
+    this.tweens.add({
+      targets: label,
+      y: y - 84,
+      alpha: 0,
+      duration: 650,
+      onComplete: () => label.destroy(),
+    });
+  }
+
+  private showHitMarker(): void {
+    const marker = this.add.text(
+      this.cameras.main.width / 2,
+      this.cameras.main.height / 2 - 70,
+      "✕",
+      {
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "30px",
+        fontStyle: "bold",
+        color: "#ffffff",
+      },
+    ).setOrigin(0.5).setScrollFactor(0).setDepth(250);
+    this.tweens.add({
+      targets: marker,
+      scaleX: 1.7,
+      scaleY: 1.7,
+      alpha: 0,
+      duration: 180,
+      onComplete: () => marker.destroy(),
+    });
+  }
+
+  private showHurtFlash(): void {
+    const flash = this.add.rectangle(
+      0,
+      0,
+      this.cameras.main.width,
+      this.cameras.main.height,
+      0xff3355,
+      0.32,
+    ).setOrigin(0).setScrollFactor(0).setDepth(240);
+    this.tweens.add({
+      targets: flash,
+      alpha: 0,
+      duration: 220,
+      onComplete: () => flash.destroy(),
+    });
+  }
+
+  private showKillMessage(hit: HitEvent): void {
+    const message = hit.attacker_id === this.localPlayerId
+      ? "YOU ELIMINATED AN ENEMY"
+      : hit.target_id === this.localPlayerId
+        ? "YOU WERE ELIMINATED"
+        : "";
+    if (!message) {
+      return;
+    }
+
+    const text = this.add.text(
+      this.cameras.main.width / 2,
+      this.cameras.main.height / 2 + 30,
+      message,
+      {
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "22px",
+        fontStyle: "bold",
+        color: hit.attacker_id === this.localPlayerId ? "#69f4c1" : "#ff6b6b",
+      },
+    ).setOrigin(0.5).setScrollFactor(0).setDepth(251);
+    this.tweens.add({
+      targets: text,
+      alpha: 0,
+      y: text.y - 20,
+      delay: 450,
+      duration: 500,
+      onComplete: () => text.destroy(),
+    });
   }
 
   private drawArena(): void {

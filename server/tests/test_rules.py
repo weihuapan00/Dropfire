@@ -14,7 +14,7 @@ from app.rules import (
     request_match_start,
     switch_weapon,
 )
-from app.state import bullets, weapon_pickups
+from app.state import bullets, hit_events, weapon_pickups
 
 
 def make_player(player_id: str, **overrides):
@@ -93,6 +93,9 @@ def test_apply_damage_accumulates_damage_dealt(room):
     assert target["alive"] is True
     assert attacker["damage_dealt"] == pytest.approx(25.0)
     assert attacker["kills"] == 0
+    assert len(hit_events) == 1
+    assert hit_events[0]["damage"] == pytest.approx(25.0)
+    assert hit_events[0]["killed"] is False
 
 
 def test_apply_damage_kill_awards_kill_and_schedules_respawn(room):
@@ -109,6 +112,8 @@ def test_apply_damage_kill_awards_kill_and_schedules_respawn(room):
     assert target["alive"] is False
     assert isinstance(target["respawn_at"], float)
     assert attacker["kills"] == 1
+    assert len(hit_events) == 1
+    assert hit_events[0]["killed"] is True
 
 
 def test_fire_weapon_spawns_bullet_and_consumes_ammo(room):

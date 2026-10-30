@@ -64,6 +64,7 @@ from .state import (
     bullets,
     create_room,
     current_room,
+    hit_events,
     players,
     room_context,
     rooms,
@@ -165,7 +166,9 @@ async def broadcast_world_state() -> None:
             }
             for bullet in bullets
         ],
+        "hits": list(hit_events),
     }
+    hit_events.clear()
     for connection in active_connections.copy():
         try:
             await connection.send_json(message)
@@ -198,6 +201,8 @@ async def game_loop() -> None:
 
                 if active_connections:
                     await broadcast_world_state()
+                else:
+                    hit_events.clear()
             finally:
                 room_context.reset(token)
 

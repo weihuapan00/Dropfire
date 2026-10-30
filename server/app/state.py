@@ -89,6 +89,7 @@ players: MutableMapping[str, dict[str, Any]] = RoomMapping("players")
 bullets: MutableSequence[dict[str, Any]] = RoomList("bullets")
 weapon_pickups: MutableSequence[dict[str, Any]] = RoomList("weapon_pickups")
 round_state: MutableMapping[str, Any] = RoomMapping("round_state")
+hit_events: MutableSequence[dict[str, Any]] = RoomList("hit_events")
 
 
 def create_initial_weapon_pickups() -> list[dict[str, Any]]:
@@ -110,6 +111,7 @@ def create_room() -> str:
         "players": {},
         "bullets": [],
         "weapon_pickups": create_initial_weapon_pickups(),
+        "hit_events": [],
         "host_player_id": None,
         "round_state": {
             "phase": "waiting",
