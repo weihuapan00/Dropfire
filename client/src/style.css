@@ -126,6 +126,59 @@ body {
   color: #ff9b96;
 }
 
+.match-end-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgba(5, 8, 14, 0.78);
+}
+
+.match-end-card {
+  width: min(92vw, 440px);
+  border: 1px solid rgba(91, 242, 189, 0.35);
+  border-radius: 18px;
+  background: #111a27;
+  padding: 32px 40px;
+  text-align: center;
+}
+
+.match-end-card h2 {
+  margin: 0 0 14px;
+  color: #f3f7ff;
+  font-size: 1.6rem;
+  letter-spacing: 0.04em;
+}
+
+.match-end-top {
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+
+.match-end-top li {
+  padding: 6px 0;
+  color: #dbe5f2;
+  font-size: 1rem;
+}
+
+.match-end-stats {
+  margin: 8px 0;
+  color: #8cffd2;
+  font-weight: 700;
+}
+
+.match-end-countdown {
+  margin: 8px 0;
+  color: #96a3b6;
+}
+
+.match-end-card .test-button {
+  margin-top: 16px;
+}
+
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 270px;

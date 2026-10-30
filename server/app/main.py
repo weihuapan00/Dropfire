@@ -57,6 +57,7 @@ from .rules import (
     request_match_start,
     reset_test_round,
     reset_weapon_pickups,
+    start_round,
     switch_weapon,
 )
 from .state import (
@@ -360,6 +361,15 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
             if message.get("type") == "start_match":
                 if request_match_start(player_id):
                     advance_round(monotonic())
+                    await broadcast_world_state()
+                continue
+
+            if message.get("type") == "next_round":
+                if (
+                    current_room()["host_player_id"] == player_id
+                    and current_room()["round_state"]["phase"] == "ending"
+                ):
+                    start_round(monotonic())
                     await broadcast_world_state()
                 continue
 

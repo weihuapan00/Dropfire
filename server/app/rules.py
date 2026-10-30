@@ -30,6 +30,7 @@ from .config import (
     RANGED_WEAPON_SETTINGS,
     RELOAD_DURATION_SECONDS,
     RESPAWN_DELAY_SECONDS,
+    ROUND_END_DELAY_SECONDS,
     SPAWN_POINTS,
     SPAWN_PROTECTION_SECONDS,
 )
@@ -498,14 +499,42 @@ def get_round_snapshot(now: float) -> dict[str, Any]:
     }
 
 
+def end_round(now: float) -> None:
+    """Freeze the battlefield, crown a winner, and pause before the next round."""
+    round_state["phase"] = "ending"
+    round_state["ends_at"] = now + ROUND_END_DELAY_SECONDS
+    bullets.clear()
+    for player in players.values():
+        player["move_x"] = 0.0
+        player["move_y"] = 0.0
+
+    ranked = sorted(
+        players.values(),
+        key=lambda player: (player["kills"], player["damage_dealt"]),
+        reverse=True,
+    )
+    leader = ranked[0] if ranked else None
+    if leader and (leader["kills"] > 0 or leader["damage_dealt"] > 0):
+        round_state["winner_id"] = leader["id"]
+    else:
+        round_state["winner_id"] = None
+
+
 def advance_round(now: float) -> None:
-    """Advance a manually started three-minute deathmatch clock."""
-    if round_state["phase"] == "waiting":
+    """Advance the deathmatch through waiting, active, and ending phases."""
+    phase = round_state["phase"]
+    if phase == "waiting":
         if round_state["start_requested"] and len(players) >= MIN_PLAYERS_TO_START_ROUND:
             start_round(now)
         return
 
-    if round_state["phase"] == "active":
+    if phase == "active":
+        ends_at = round_state["ends_at"]
+        if isinstance(ends_at, float) and now >= ends_at:
+            end_round(now)
+        return
+
+    if phase == "ending":
         ends_at = round_state["ends_at"]
         if isinstance(ends_at, float) and now >= ends_at:
             start_round(now)

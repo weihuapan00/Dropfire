@@ -239,6 +239,27 @@ def test_advance_round_starts_when_requested(room):
     assert isinstance(room["round_state"]["ends_at"], float)
 
 
+def test_round_enters_ending_then_restarts(room):
+    room["round_state"]["phase"] = "active"
+    room["round_state"]["number"] = 1
+    room["round_state"]["ends_at"] = monotonic() - 1.0
+    room["players"]["winner"] = make_player("winner", kills=3, damage_dealt=120.0)
+    room["players"]["loser"] = make_player("loser", kills=1, damage_dealt=40.0)
+
+    advance_round(monotonic())
+
+    assert room["round_state"]["phase"] == "ending"
+    assert room["round_state"]["winner_id"] == "winner"
+    assert room["round_state"]["ends_at"] > monotonic()
+
+    room["round_state"]["ends_at"] = monotonic() - 1.0
+    advance_round(monotonic())
+
+    assert room["round_state"]["phase"] == "active"
+    assert room["round_state"]["number"] == 2
+    assert room["round_state"]["winner_id"] is None
+
+
 def test_request_match_start_requires_host(room):
     room["players"]["host"] = make_player("host")
     room["players"]["guest"] = make_player("guest")

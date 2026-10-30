@@ -72,7 +72,7 @@ app.innerHTML = `
 
       <aside class="panel">
         <h2>Find a weapon</h2>
-        <p>Everyone starts with a knife. Stand near a pistol or rifle pickup and press E to equip it before another player does.</p>
+        <p>Everyone starts with fists. Stand near a knife, pistol, or rifle pickup and press E to equip it before another player does.</p>
 
         <div class="key-grid" aria-label="WASD movement keys">
           <span class="key">W</span>
@@ -87,6 +87,16 @@ app.innerHTML = `
         </div>
       </aside>
     </section>
+    <div class="match-end-overlay" id="match-end-overlay" hidden>
+      <div class="match-end-card">
+        <p class="eyebrow">ROUND OVER</p>
+        <h2 id="match-end-title">MATCH OVER</h2>
+        <ol id="match-end-top" class="match-end-top"></ol>
+        <p id="match-end-your-stats" class="match-end-stats"></p>
+        <p id="match-end-countdown" class="match-end-countdown"></p>
+        <button class="test-button primary-action" id="match-end-next" type="button">再来一局 →</button>
+      </div>
+    </div>
   </main>
 `;
 
@@ -115,6 +125,12 @@ const waitingPlayerList = document.querySelector<HTMLUListElement>("#waiting-pla
 const waitingMessage = document.querySelector<HTMLElement>("#waiting-message");
 const addAiBotButton = document.querySelector<HTMLButtonElement>("#add-ai-bot");
 const startMatchButton = document.querySelector<HTMLButtonElement>("#start-match");
+const matchEndOverlay = document.querySelector<HTMLElement>("#match-end-overlay");
+const matchEndTitle = document.querySelector<HTMLElement>("#match-end-title");
+const matchEndTop = document.querySelector<HTMLElement>("#match-end-top");
+const matchEndYourStats = document.querySelector<HTMLElement>("#match-end-your-stats");
+const matchEndCountdown = document.querySelector<HTMLElement>("#match-end-countdown");
+const matchEndNextButton = document.querySelector<HTMLButtonElement>("#match-end-next");
 
 interface WaitingPlayerState {
   id: string;
@@ -126,6 +142,18 @@ interface WaitingPlayerState {
 
 interface WaitingRoundState {
   phase: "waiting" | "active" | "ending";
+  number: number;
+  winner_id: string | null;
+  ends_in_seconds: number;
+}
+
+interface MatchResultPlayer {
+  id: string;
+  name: string | null;
+  is_bot: boolean;
+  kills: number;
+  damage_dealt: number;
+  is_host: boolean;
 }
 
 let localPlayerId: string | null = null;
@@ -184,10 +212,30 @@ function isWaitingPlayerState(value: unknown): value is WaitingPlayerState {
 }
 
 function isWaitingRoundState(value: unknown): value is WaitingRoundState {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const round = value as Record<string, unknown>;
   return (
-    typeof value === "object" &&
-    value !== null &&
-    ["waiting", "active", "ending"].includes((value as Record<string, unknown>).phase as string)
+    ["waiting", "active", "ending"].includes(round.phase as string)
+    && typeof round.number === "number"
+    && (round.winner_id === null || typeof round.winner_id === "string")
+    && typeof round.ends_in_seconds === "number"
+  );
+}
+
+function isMatchResultPlayer(value: unknown): value is MatchResultPlayer {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const player = value as Record<string, unknown>;
+  return (
+    typeof player.id === "string"
+    && (typeof player.name === "string" || player.name === null)
+    && typeof player.is_bot === "boolean"
+    && typeof player.kills === "number"
+    && typeof player.damage_dealt === "number"
+    && typeof player.is_host === "boolean"
   );
 }
 
@@ -216,6 +264,61 @@ function renderWaitingRoom(players: WaitingPlayerState[], round: WaitingRoundSta
   if (startMatchButton) {
     startMatchButton.disabled = !localPlayerIsHost || players.length < 2 || round.phase !== "waiting";
   }
+}
+
+function resultPlayerName(player: MatchResultPlayer): string {
+  if (player.name) return player.name;
+  if (player.is_bot) return "BOT";
+  return `P${player.id.slice(0, 4)}`;
+}
+
+function renderMatchEnd(players: MatchResultPlayer[], round: WaitingRoundState): void {
+  if (!matchEndOverlay) return;
+
+  const ranked = [...players].sort(
+    (left, right) => right.kills - left.kills || right.damage_dealt - left.damage_dealt,
+  );
+
+  const winner = round.winner_id
+    ? players.find((player) => player.id === round.winner_id)
+    : undefined;
+  if (matchEndTitle) {
+    matchEndTitle.textContent = winner ? `${resultPlayerName(winner)} WINS` : "DRAW";
+  }
+
+  if (matchEndTop) {
+    matchEndTop.innerHTML = "";
+    ranked.slice(0, 3).forEach((player, index) => {
+      const item = document.createElement("li");
+      const crown = index === 0 ? "🏆 " : "";
+      item.textContent = `${crown}${index + 1}. ${resultPlayerName(player)} — ${player.kills} K · ${Math.round(player.damage_dealt)} DMG`;
+      matchEndTop.append(item);
+    });
+  }
+
+  const local = players.find((player) => player.id === localPlayerId);
+  if (matchEndYourStats) {
+    const rank = ranked.findIndex((player) => player.id === localPlayerId) + 1;
+    matchEndYourStats.textContent = local
+      ? `你的战绩：第 ${rank} 名 · ${local.kills} 击杀 · ${Math.round(local.damage_dealt)} 伤害`
+      : "你的战绩：已离线";
+  }
+
+  if (matchEndCountdown) {
+    matchEndCountdown.textContent = `下一局 ${Math.ceil(round.ends_in_seconds)}s 后自动开始`;
+  }
+
+  if (matchEndNextButton) {
+    const isHost = local?.is_host ?? false;
+    matchEndNextButton.disabled = !isHost;
+    matchEndNextButton.textContent = isHost ? "再来一局 →" : "等待房主开始…";
+  }
+
+  matchEndOverlay.hidden = false;
+}
+
+function hideMatchEnd(): void {
+  if (matchEndOverlay) matchEndOverlay.hidden = true;
 }
 
 function renderConnectionState(state: ConnectionState): void {
@@ -263,6 +366,7 @@ function launchArena(): void {
 function enterRoom(roomCode: string): void {
   currentRoomCode = roomCode;
   arenaStarted = false;
+  hideMatchEnd();
   sessionStorage.setItem(LAST_ROOM_STORAGE_KEY, roomCode);
   window.history.replaceState(null, "", `?room=${encodeURIComponent(roomCode)}`);
   roomCodeElement && (roomCodeElement.textContent = roomCode);
@@ -299,10 +403,14 @@ function enterRoom(roomCode: string): void {
       Array.isArray(message.players) &&
       isWaitingRoundState(message.round)
     ) {
-      const players = message.players.filter(isWaitingPlayerState);
-      renderWaitingRoom(players, message.round);
-      if (message.round.phase === "active") {
-        launchArena();
+      if (message.round.phase === "ending") {
+        renderMatchEnd(message.players.filter(isMatchResultPlayer), message.round);
+      } else {
+        hideMatchEnd();
+        renderWaitingRoom(message.players.filter(isWaitingPlayerState), message.round);
+        if (message.round.phase === "active") {
+          launchArena();
+        }
       }
     }
   });
@@ -314,6 +422,7 @@ function returnToLobby(): void {
   gameSocket = null;
   phaserGame?.destroy(true);
   phaserGame = null;
+  hideMatchEnd();
   arenaStarted = false;
   currentRoomCode = null;
   sessionStorage.removeItem(LAST_ROOM_STORAGE_KEY);
@@ -367,6 +476,7 @@ audioToggleButton?.addEventListener("click", () => {
 });
 leaveWaitingRoomButton?.addEventListener("click", returnToLobby);
 leaveRoomButton?.addEventListener("click", returnToLobby);
+matchEndNextButton?.addEventListener("click", () => gameSocket?.send({ type: "next_round" }));
 renderMusicToggle();
 if (playerNameInput) {
   playerNameInput.value = localStorage.getItem(PLAYER_NAME_STORAGE_KEY) ?? "";
