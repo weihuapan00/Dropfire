@@ -10,6 +10,10 @@ const INTERPOLATION_AT_60_FPS = 0.2;
 const BULLET_INTERPOLATION_AT_60_FPS = 0.55;
 const AUTOMATIC_FIRE_INTENT_INTERVAL_MS = 120;
 const RELOAD_RING_RADIUS = 31;
+const MOBILE_JOYSTICK_X = 126;
+const MOBILE_JOYSTICK_Y = 592;
+const MOBILE_JOYSTICK_RADIUS = 70;
+const MOBILE_ACTION_Y = 628;
 const WEAPON_TYPES = ["fists", "knife", "pistol", "rifle"] as const;
 
 type WeaponType = (typeof WEAPON_TYPES)[number];
@@ -206,6 +210,11 @@ export class ArenaScene extends Phaser.Scene {
   private nextAutomaticFireAt = 0;
   private lastSentMoveDirection = new Phaser.Math.Vector2();
   private readonly pointerWorldPosition = new Phaser.Math.Vector2();
+  private readonly touchMoveDirection = new Phaser.Math.Vector2();
+  private touchMovePointerId: number | null = null;
+  private touchAimPointer: Phaser.Input.Pointer | null = null;
+  private isTouchControlScheme = false;
+  private mobileControls!: Phaser.GameObjects.Graphics;
   private aimLine!: Phaser.GameObjects.Graphics;
   private ammoHud!: Phaser.GameObjects.Text;
   private roundHud!: Phaser.GameObjects.Text;
@@ -224,6 +233,10 @@ export class ArenaScene extends Phaser.Scene {
   create(): void {
     this.drawArena();
     this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+    this.isTouchControlScheme = navigator.maxTouchPoints > 0;
+    if (this.isTouchControlScheme) {
+      this.input.addPointer(2);
+    }
 
     this.aimLine = this.add.graphics();
     this.ammoHud = this.add
@@ -310,23 +323,40 @@ export class ArenaScene extends Phaser.Scene {
     this.pickupKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
     this.spectateKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.P);
 
-    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
-      this.fireTowardPointer(pointer);
-      if (FIRE_MODES[this.localWeapon] === "automatic") {
-        this.automaticFireIsHeld = true;
-        this.nextAutomaticFireAt = this.time.now + AUTOMATIC_FIRE_INTENT_INTERVAL_MS;
-      }
-    });
-    this.input.on("pointerup", () => {
-      this.automaticFireIsHeld = false;
-    });
+    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.handlePointerDown(pointer));
+    this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => this.handlePointerMove(pointer));
+    this.input.on("pointerup", (pointer: Phaser.Input.Pointer) => this.handlePointerUp(pointer));
+
+    if (this.isTouchControlScheme) {
+      this.mobileControls = this.add.graphics().setScrollFactor(0).setDepth(110);
+      this.add.text(985, MOBILE_ACTION_Y, "PICK", {
+        color: "#f4f7fb",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "15px",
+        fontStyle: "bold",
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(111);
+      this.add.text(1135, MOBILE_ACTION_Y, "RELOAD", {
+        color: "#f4f7fb",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "13px",
+        fontStyle: "bold",
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(111);
+      this.drawMobileControls();
+    }
 
     this.add
-      .text(640, 680, "Move: WASD / arrows  •  E: pick up  •  R: reload  •  P: spectate next  •  Knife: click  •  Pistol: click  •  Rifle: hold left click", {
+      .text(
+        640,
+        680,
+        this.isTouchControlScheme
+          ? "Left stick: move  •  Right side: aim & fire  •  PICK UP / RELOAD buttons"
+          : "Move: WASD / arrows  •  E: pick up  •  R: reload  •  P: spectate next  •  Knife: click  •  Pistol: click  •  Rifle: hold left click",
+        {
         color: "#96a3b6",
         fontFamily: "system-ui, sans-serif",
-        fontSize: "18px",
-      })
+        fontSize: this.isTouchControlScheme ? "15px" : "18px",
+        },
+      )
       .setOrigin(0.5)
       .setScrollFactor(0)
       .setDepth(100);
@@ -363,7 +393,7 @@ export class ArenaScene extends Phaser.Scene {
       this.nextAutomaticFireAt = time + AUTOMATIC_FIRE_INTENT_INTERVAL_MS;
     }
 
-    const direction = new Phaser.Math.Vector2(
+    const keyboardDirection = new Phaser.Math.Vector2(
       this.getAxis(
         this.movementKeys.left,
         this.cursors.left,
@@ -378,9 +408,11 @@ export class ArenaScene extends Phaser.Scene {
       ),
     );
 
-    if (direction.lengthSq() > 0) {
-      direction.normalize();
+    if (keyboardDirection.lengthSq() > 0) {
+      keyboardDirection.normalize();
     }
+
+    const direction = this.touchMovePointerId === null ? keyboardDirection : this.touchMoveDirection;
 
     if (
       direction.x !== this.lastSentMoveDirection.x ||
@@ -847,7 +879,7 @@ export class ArenaScene extends Phaser.Scene {
       return;
     }
 
-    const pointer = this.input.activePointer;
+    const pointer = this.touchAimPointer ?? this.input.activePointer;
     pointer.positionToCamera(this.cameras.main, this.pointerWorldPosition);
     const angle = Phaser.Math.Angle.Between(
       player.x,
@@ -895,6 +927,101 @@ export class ArenaScene extends Phaser.Scene {
       direction_x: directionX,
       direction_y: directionY,
     });
+  }
+
+  private handlePointerDown(pointer: Phaser.Input.Pointer): void {
+    if (!this.isTouchPointer(pointer)) {
+      this.startFiringAt(pointer);
+      return;
+    }
+
+    if (this.isMobileAction(pointer)) {
+      if (pointer.x < 1080) {
+        this.gameSocket.send({ type: "pickup_intent" });
+      } else {
+        this.gameSocket.send({ type: "reload_intent" });
+      }
+      return;
+    }
+
+    if (pointer.x < 640 && this.touchMovePointerId === null) {
+      this.touchMovePointerId = pointer.id;
+      this.updateTouchMoveDirection(pointer);
+      return;
+    }
+
+    if (this.touchAimPointer === null) {
+      this.touchAimPointer = pointer;
+      this.startFiringAt(pointer);
+    }
+  }
+
+  private handlePointerMove(pointer: Phaser.Input.Pointer): void {
+    if (pointer.id === this.touchMovePointerId) {
+      this.updateTouchMoveDirection(pointer);
+    }
+  }
+
+  private handlePointerUp(pointer: Phaser.Input.Pointer): void {
+    if (pointer.id === this.touchMovePointerId) {
+      this.touchMovePointerId = null;
+      this.touchMoveDirection.set(0, 0);
+    }
+    if (pointer.id === this.touchAimPointer?.id) {
+      this.touchAimPointer = null;
+      this.automaticFireIsHeld = false;
+    }
+    if (!this.isTouchPointer(pointer)) {
+      this.automaticFireIsHeld = false;
+    }
+  }
+
+  private startFiringAt(pointer: Phaser.Input.Pointer): void {
+    this.fireTowardPointer(pointer);
+    if (FIRE_MODES[this.localWeapon] === "automatic") {
+      this.automaticFireIsHeld = true;
+      this.nextAutomaticFireAt = this.time.now + AUTOMATIC_FIRE_INTENT_INTERVAL_MS;
+    }
+  }
+
+  private updateTouchMoveDirection(pointer: Phaser.Input.Pointer): void {
+    this.touchMoveDirection.set(pointer.x - MOBILE_JOYSTICK_X, pointer.y - MOBILE_JOYSTICK_Y);
+    if (this.touchMoveDirection.lengthSq() > MOBILE_JOYSTICK_RADIUS * MOBILE_JOYSTICK_RADIUS) {
+      this.touchMoveDirection.setLength(MOBILE_JOYSTICK_RADIUS);
+    }
+    if (this.touchMoveDirection.lengthSq() > 0) {
+      this.touchMoveDirection.normalize();
+    }
+    this.drawMobileControls();
+  }
+
+  private isMobileAction(pointer: Phaser.Input.Pointer): boolean {
+    return pointer.y > 574 && pointer.x > 900;
+  }
+
+  private isTouchPointer(pointer: Phaser.Input.Pointer): boolean {
+    return pointer.wasTouch;
+  }
+
+  private drawMobileControls(): void {
+    this.mobileControls.clear();
+    this.mobileControls.fillStyle(0x111a27, 0.62);
+    this.mobileControls.fillCircle(MOBILE_JOYSTICK_X, MOBILE_JOYSTICK_Y, MOBILE_JOYSTICK_RADIUS);
+    this.mobileControls.lineStyle(3, 0x7ed7ff, 0.75);
+    this.mobileControls.strokeCircle(MOBILE_JOYSTICK_X, MOBILE_JOYSTICK_Y, MOBILE_JOYSTICK_RADIUS);
+    this.mobileControls.fillStyle(0x7ed7ff, 0.75);
+    this.mobileControls.fillCircle(
+      MOBILE_JOYSTICK_X + this.touchMoveDirection.x * 38,
+      MOBILE_JOYSTICK_Y + this.touchMoveDirection.y * 38,
+      25,
+    );
+
+    for (const x of [985, 1135]) {
+      this.mobileControls.fillStyle(0x111a27, 0.78);
+      this.mobileControls.fillCircle(x, MOBILE_ACTION_Y, 51);
+      this.mobileControls.lineStyle(3, 0xf5c55b, 0.85);
+      this.mobileControls.strokeCircle(x, MOBILE_ACTION_Y, 51);
+    }
   }
 
   private getAxis(
