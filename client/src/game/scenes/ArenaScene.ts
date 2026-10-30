@@ -22,12 +22,15 @@ const RELOAD_RING_RADIUS = 31;
 const MOBILE_JOYSTICK_X = 126;
 const MOBILE_JOYSTICK_Y = 592;
 const MOBILE_JOYSTICK_RADIUS = 70;
+const MOBILE_JOYSTICK_DEAD_ZONE = 0.16;
 const MOBILE_AIM_JOYSTICK_X = 1154;
 const MOBILE_AIM_JOYSTICK_Y = 592;
 const MOBILE_SWITCH_X = 834;
 const MOBILE_PICKUP_X = 1004;
 const MOBILE_RELOAD_X = 1174;
 const MOBILE_ACTION_Y = 462;
+const MOBILE_ACTION_DRAW_RADIUS = 54;
+const MOBILE_ACTION_HIT_RADIUS = 62;
 const PICKUP_HINT_RADIUS = 42;
 const WEAPON_TYPES = ["fists", "knife", "pistol", "rifle"] as const;
 
@@ -284,6 +287,8 @@ export class ArenaScene extends Phaser.Scene {
   private touchMovePointerId: number | null = null;
   private touchAimPointer: Phaser.Input.Pointer | null = null;
   private touchAimHasFired = false;
+  private pressedMobileAction: "switch" | "pickup" | "reload" | null = null;
+  private mobileActionPointerId: number | null = null;
   private isTouchControlScheme = false;
   private mobileControls!: Phaser.GameObjects.Graphics;
   private aimLine!: Phaser.GameObjects.Graphics;
@@ -1178,6 +1183,7 @@ export class ArenaScene extends Phaser.Scene {
         this.spawnBlockLabel(hit.x, hit.y);
         if (hit.target_id === this.localPlayerId) {
           soundscape.playBlock();
+          navigator.vibrate?.(15);
         }
         continue;
       }
@@ -1192,6 +1198,7 @@ export class ArenaScene extends Phaser.Scene {
       if (hit.target_id === this.localPlayerId) {
         this.showHurtFlash();
         soundscape.playHurt();
+        navigator.vibrate?.(20);
       }
       if (hit.killed) {
         this.addKillFeedEntry(hit.attacker_id, hit.target_id);
@@ -1430,6 +1437,10 @@ export class ArenaScene extends Phaser.Scene {
 
     const mobileAction = this.getMobileAction(pointer);
     if (mobileAction) {
+      this.pressedMobileAction = mobileAction;
+      this.mobileActionPointerId = pointer.id;
+      this.drawMobileControls();
+      navigator.vibrate?.(10);
       if (mobileAction === "pickup") {
         this.gameSocket.send({ type: "pickup_intent" });
       } else if (mobileAction === "reload") {
@@ -1465,6 +1476,11 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private handlePointerUp(pointer: Phaser.Input.Pointer): void {
+    if (pointer.id === this.mobileActionPointerId) {
+      this.pressedMobileAction = null;
+      this.mobileActionPointerId = null;
+      this.drawMobileControls();
+    }
     if (pointer.id === this.touchMovePointerId) {
       this.touchMovePointerId = null;
       this.touchMoveDirection.set(0, 0);
@@ -1502,10 +1518,13 @@ export class ArenaScene extends Phaser.Scene {
 
   private updateTouchMoveDirection(pointer: Phaser.Input.Pointer): void {
     this.touchMoveDirection.set(pointer.x - MOBILE_JOYSTICK_X, pointer.y - MOBILE_JOYSTICK_Y);
-    if (this.touchMoveDirection.lengthSq() > MOBILE_JOYSTICK_RADIUS * MOBILE_JOYSTICK_RADIUS) {
+    const length = this.touchMoveDirection.length();
+    if (length > MOBILE_JOYSTICK_RADIUS) {
       this.touchMoveDirection.setLength(MOBILE_JOYSTICK_RADIUS);
     }
-    if (this.touchMoveDirection.lengthSq() > 0) {
+    if (length < MOBILE_JOYSTICK_RADIUS * MOBILE_JOYSTICK_DEAD_ZONE) {
+      this.touchMoveDirection.set(0, 0);
+    } else {
       this.touchMoveDirection.normalize();
     }
     this.drawMobileControls();
@@ -1513,10 +1532,13 @@ export class ArenaScene extends Phaser.Scene {
 
   private updateTouchAimDirection(pointer: Phaser.Input.Pointer): void {
     this.touchAimDirection.set(pointer.x - MOBILE_AIM_JOYSTICK_X, pointer.y - MOBILE_AIM_JOYSTICK_Y);
-    if (this.touchAimDirection.lengthSq() > MOBILE_JOYSTICK_RADIUS * MOBILE_JOYSTICK_RADIUS) {
+    const length = this.touchAimDirection.length();
+    if (length > MOBILE_JOYSTICK_RADIUS) {
       this.touchAimDirection.setLength(MOBILE_JOYSTICK_RADIUS);
     }
-    if (this.touchAimDirection.lengthSq() > 0) {
+    if (length < MOBILE_JOYSTICK_RADIUS * MOBILE_JOYSTICK_DEAD_ZONE) {
+      this.touchAimDirection.set(0, 0);
+    } else {
       this.touchAimDirection.normalize();
     }
     this.drawMobileControls();
@@ -1524,7 +1546,7 @@ export class ArenaScene extends Phaser.Scene {
 
   private getMobileAction(pointer: Phaser.Input.Pointer): "switch" | "pickup" | "reload" | null {
     const withinButton = (x: number) =>
-      Phaser.Math.Distance.Between(pointer.x, pointer.y, x, MOBILE_ACTION_Y) <= 52;
+      Phaser.Math.Distance.Between(pointer.x, pointer.y, x, MOBILE_ACTION_Y) <= MOBILE_ACTION_HIT_RADIUS;
     if (withinButton(MOBILE_SWITCH_X)) return "switch";
     if (withinButton(MOBILE_PICKUP_X)) return "pickup";
     if (withinButton(MOBILE_RELOAD_X)) return "reload";
@@ -1559,11 +1581,17 @@ export class ArenaScene extends Phaser.Scene {
       25,
     );
 
-    for (const x of [MOBILE_SWITCH_X, MOBILE_PICKUP_X, MOBILE_RELOAD_X]) {
-      this.mobileControls.fillStyle(0x111a27, 0.78);
-      this.mobileControls.fillCircle(x, MOBILE_ACTION_Y, 51);
-      this.mobileControls.lineStyle(3, 0xf5c55b, 0.85);
-      this.mobileControls.strokeCircle(x, MOBILE_ACTION_Y, 51);
+    const actionButtons: Array<["switch" | "pickup" | "reload", number]> = [
+      ["switch", MOBILE_SWITCH_X],
+      ["pickup", MOBILE_PICKUP_X],
+      ["reload", MOBILE_RELOAD_X],
+    ];
+    for (const [action, x] of actionButtons) {
+      const pressed = this.pressedMobileAction === action;
+      this.mobileControls.fillStyle(pressed ? 0x2b3f57 : 0x111a27, pressed ? 0.95 : 0.78);
+      this.mobileControls.fillCircle(x, MOBILE_ACTION_Y, MOBILE_ACTION_DRAW_RADIUS);
+      this.mobileControls.lineStyle(3, pressed ? 0x8cffd2 : 0xf5c55b, pressed ? 1 : 0.85);
+      this.mobileControls.strokeCircle(x, MOBILE_ACTION_Y, MOBILE_ACTION_DRAW_RADIUS);
     }
   }
 

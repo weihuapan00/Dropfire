@@ -42,6 +42,7 @@ app.innerHTML = `
       <h2>How to play</h2>
       <p><strong>Desktop:</strong> WASD / arrows move · mouse aims and fires · E picks up · R reloads · G switches weapon.</p>
       <p><strong>Mobile:</strong> left stick moves · right side aims and fires · use SWITCH / PICK / RELOAD buttons.</p>
+      <p><strong>Phone tip:</strong> tap <em>Fullscreen</em>, or add Dropfire to your home screen to launch without browser tabs.</p>
       <p>Matches last 3 minutes. Ranking uses kills, then total damage. Everyone starts with fists; scarce one-shot knives, pistols, and rifles must be found.</p>
     </section>
   </section>
@@ -67,7 +68,8 @@ app.innerHTML = `
     <section class="layout">
       <div class="game-frame">
         <div id="game-root"></div>
-        <button class="mobile-fullscreen" id="mobile-fullscreen" type="button" hidden>⛶ Full screen</button>
+        <button class="mobile-fullscreen" id="mobile-fullscreen" type="button" hidden>⛶ Fullscreen</button>
+        <button class="mobile-fullscreen mobile-leave" id="mobile-leave" type="button" hidden>← Leave</button>
       </div>
 
       <aside class="panel">
@@ -116,6 +118,7 @@ const roomCodeElement = document.querySelector<HTMLElement>("#room-code");
 const copyRoomCodeButton = document.querySelector<HTMLButtonElement>("#copy-room-code");
 const gameFrame = document.querySelector<HTMLElement>(".game-frame");
 const mobileFullscreenButton = document.querySelector<HTMLButtonElement>("#mobile-fullscreen");
+const mobileLeaveButton = document.querySelector<HTMLButtonElement>("#mobile-leave");
 const audioToggleButton = document.querySelector<HTMLButtonElement>("#audio-toggle");
 const leaveRoomButton = document.querySelector<HTMLButtonElement>("#leave-room");
 const leaveWaitingRoomButton = document.querySelector<HTMLButtonElement>("#leave-waiting-room");
@@ -182,10 +185,23 @@ function usesMobileBattlefield(): boolean {
   );
 }
 
-async function enterMobileFullscreen(): Promise<void> {
+function isFullscreen(): boolean {
+  return document.fullscreenElement !== null;
+}
+
+function renderFullscreenButton(): void {
+  if (!mobileFullscreenButton) return;
+  mobileFullscreenButton.textContent = isFullscreen() ? "⛶ Exit fullscreen" : "⛶ Fullscreen";
+}
+
+async function toggleMobileFullscreen(): Promise<void> {
   if (!gameFrame) return;
 
   try {
+    if (isFullscreen()) {
+      await document.exitFullscreen();
+      return;
+    }
     await gameFrame.requestFullscreen();
     const orientation = screen.orientation as ScreenOrientation & {
       lock?: (orientation: "landscape") => Promise<void>;
@@ -193,6 +209,8 @@ async function enterMobileFullscreen(): Promise<void> {
     await orientation.lock?.("landscape");
   } catch {
     // Some mobile browsers do not allow element fullscreen. The mobile layout still fills the viewport.
+  } finally {
+    renderFullscreenButton();
   }
 }
 
@@ -357,6 +375,8 @@ function launchArena(): void {
   const mobileBattlefield = usesMobileBattlefield();
   document.body.classList.toggle("mobile-battlefield", mobileBattlefield);
   if (mobileFullscreenButton) mobileFullscreenButton.hidden = !mobileBattlefield;
+  if (mobileLeaveButton) mobileLeaveButton.hidden = !mobileBattlefield;
+  renderFullscreenButton();
   roomLobby?.setAttribute("hidden", "");
   gameShell?.removeAttribute("hidden");
   phaserGame = createGame("game-root", gameSocket, localPlayerId);
@@ -468,8 +488,10 @@ copyRoomCodeButton?.addEventListener("click", async () => {
   if (currentRoomCode) await navigator.clipboard.writeText(currentRoomCode);
 });
 mobileFullscreenButton?.addEventListener("click", () => {
-  void enterMobileFullscreen();
+  void toggleMobileFullscreen();
 });
+mobileLeaveButton?.addEventListener("click", returnToLobby);
+document.addEventListener("fullscreenchange", renderFullscreenButton);
 audioToggleButton?.addEventListener("click", () => {
   soundscape.toggleMusic();
   renderMusicToggle();
@@ -478,6 +500,11 @@ leaveWaitingRoomButton?.addEventListener("click", returnToLobby);
 leaveRoomButton?.addEventListener("click", returnToLobby);
 matchEndNextButton?.addEventListener("click", () => gameSocket?.send({ type: "next_round" }));
 renderMusicToggle();
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    void navigator.serviceWorker.register("/sw.js");
+  });
+}
 if (playerNameInput) {
   playerNameInput.value = localStorage.getItem(PLAYER_NAME_STORAGE_KEY) ?? "";
 }
