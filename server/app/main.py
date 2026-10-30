@@ -66,6 +66,7 @@ from .state import (
     create_room,
     current_room,
     hit_events,
+    mark_stale_empty_rooms,
     players,
     room_context,
     rooms,
@@ -216,6 +217,7 @@ async def game_loop() -> None:
             finally:
                 room_context.reset(token)
 
+        mark_stale_empty_rooms(now)
         for code in [code for code, room in rooms.items() if room.get("should_close")]:
             rooms.pop(code, None)
 

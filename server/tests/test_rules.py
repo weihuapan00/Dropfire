@@ -205,6 +205,26 @@ def test_switch_weapon_toggles_between_gun_and_melee(room):
     assert player["weapon"] == "pistol"
 
 
+def test_switch_to_melee_cancels_reload_but_keeps_ammo(room):
+    activate_round(room)
+    player = make_player(
+        "p1",
+        weapon="pistol",
+        melee_weapon="knife",
+        gun_weapon="pistol",
+        ammo_in_mag=4,
+        magazine_capacity=12,
+        reload_ends_at=monotonic() + 1.0,
+    )
+    room["players"]["p1"] = player
+
+    assert switch_weapon(player) is True
+    assert player["weapon"] == "knife"
+    assert player["reload_ends_at"] is None
+    assert player["ammo_in_mag"] == 4
+    assert player["gun_weapon"] == "pistol"
+
+
 def test_melee_damage_differs_by_weapon(room):
     activate_round(room)
     attacker = make_player("attacker", x=1280.0, y=720.0, melee_weapon="knife", weapon="knife")

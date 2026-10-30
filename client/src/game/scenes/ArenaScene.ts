@@ -788,7 +788,8 @@ export class ArenaScene extends Phaser.Scene {
     const owner = playerState.id === this.localPlayerId
       ? "YOU · "
       : `${this.displayNameFor(playerState)} · `;
-    const ammo = playerState.magazine_capacity > 0
+    const isRanged = playerState.weapon === "pistol" || playerState.weapon === "rifle";
+    const ammo = isRanged && playerState.magazine_capacity > 0
       ? ` · ${playerState.ammo_in_mag}/${playerState.magazine_capacity}`
       : "";
     const shieldStatus = playerState.spawn_protection_ends_in_seconds > 0
@@ -799,10 +800,10 @@ export class ArenaScene extends Phaser.Scene {
       : playerState.alive
         ? shieldStatus || `HP ${playerState.hp}`
         : `RESPAWN ${Math.ceil(playerState.respawn_ends_in_seconds)}s`;
-    const reloadStatus = playerState.reload_progress > 0 ? "\nRELOADING" : "";
+    const reloadStatus = isRanged && playerState.reload_progress > 0 ? "\nRELOADING" : "";
     label.setText(`${owner}${WEAPON_LABELS[playerState.weapon]}${ammo}\n${combatStatus}${reloadStatus}`);
     if (playerState.id === this.localPlayerId) {
-      const ammoHudValue = playerState.magazine_capacity > 0
+      const ammoHudValue = isRanged && playerState.magazine_capacity > 0
         ? `${playerState.ammo_in_mag} / ${playerState.magazine_capacity}`
         : "--";
       const hpHudValue = playerState.alive

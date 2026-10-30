@@ -420,6 +420,7 @@ def collect_weapon_pickup(player: dict[str, Any]) -> bool:
             if pickup["weapon"] in MELEE_WEAPON_SETTINGS:
                 player["melee_weapon"] = pickup["weapon"]
                 player["weapon"] = pickup["weapon"]
+                player["reload_ends_at"] = None
             else:
                 player["gun_weapon"] = pickup["weapon"]
                 player["magazine_capacity"] = MAGAZINE_CAPACITIES.get(pickup["weapon"], 0)
@@ -439,6 +440,7 @@ def switch_weapon(player: dict[str, Any]) -> bool:
 
     if player["weapon"] in RANGED_WEAPON_SETTINGS:
         player["weapon"] = player.get("melee_weapon", DEFAULT_WEAPON)
+        player["reload_ends_at"] = None
         return True
 
     if player.get("gun_weapon") is not None:

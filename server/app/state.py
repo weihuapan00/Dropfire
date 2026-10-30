@@ -8,12 +8,13 @@ handler or game-loop iteration is operating on, and the module-level proxies
 
 from collections.abc import MutableMapping, MutableSequence
 from contextvars import ContextVar
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
 from fastapi import WebSocket
 
-from .config import INITIAL_WEAPON_PICKUPS, ROOM_CODE_ALPHABET
+from .config import EMPTY_ROOM_TTL_SECONDS, INITIAL_WEAPON_PICKUPS, ROOM_CODE_ALPHABET
 
 
 rooms: dict[str, dict[str, Any]] = {}
@@ -109,6 +110,7 @@ def create_room() -> str:
     rooms[code] = {
         "code": code,
         "should_close": False,
+        "created_at": monotonic(),
         "active_connections": [],
         "players": {},
         "bullets": [],
@@ -124,3 +126,10 @@ def create_room() -> str:
         },
     }
     return code
+
+
+def mark_stale_empty_rooms(now: float) -> None:
+    """Mark rooms that were created but never joined for removal."""
+    for room in rooms.values():
+        if not room["players"] and now - room.get("created_at", now) > EMPTY_ROOM_TTL_SECONDS:
+            room["should_close"] = True

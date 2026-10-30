@@ -3,6 +3,7 @@
 from time import monotonic
 
 from app.bots import remove_expired_disconnections
+from app.state import mark_stale_empty_rooms
 
 
 def test_room_marks_close_when_last_human_disconnect_expires(room):
@@ -37,4 +38,27 @@ def test_room_stays_open_while_another_human_remains(room):
 
     assert "p1" not in room["players"]
     assert "p2" in room["players"]
+    assert room["should_close"] is False
+
+
+def test_stale_empty_room_is_marked_for_close(room):
+    room["created_at"] = monotonic() - 61.0
+
+    mark_stale_empty_rooms(monotonic())
+
+    assert room["should_close"] is True
+
+
+def test_fresh_empty_room_is_not_marked_for_close(room):
+    mark_stale_empty_rooms(monotonic())
+
+    assert room["should_close"] is False
+
+
+def test_occupied_room_is_not_marked_for_close(room):
+    room["created_at"] = monotonic() - 3600.0
+    room["players"]["p1"] = {"id": "p1"}
+
+    mark_stale_empty_rooms(monotonic())
+
     assert room["should_close"] is False
