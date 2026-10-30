@@ -482,10 +482,18 @@ export class ArenaScene extends Phaser.Scene {
       }
 
       if (
+        message.type === "arena_config"
+        && Array.isArray(message.covers)
+        && !this.hasSyncedCovers
+      ) {
+        this.syncCovers(message.covers.filter(isCoverState));
+        this.hasSyncedCovers = true;
+      }
+
+      if (
         message.type === "world_state" &&
         isRoundState(message.round) &&
         Array.isArray(message.players) &&
-        Array.isArray(message.covers) &&
         Array.isArray(message.pickups) &&
         Array.isArray(message.health_pickups) &&
         Array.isArray(message.bullets) &&
@@ -493,10 +501,6 @@ export class ArenaScene extends Phaser.Scene {
       ) {
         this.syncRound(message.round);
         this.syncPlayers(message.players.filter(isPlayerState));
-        if (!this.hasSyncedCovers) {
-          this.syncCovers(message.covers.filter(isCoverState));
-          this.hasSyncedCovers = true;
-        }
         this.syncPickups(message.pickups.filter(isPickupState));
         this.syncHealthPickups(message.health_pickups.filter(isHealthPickupState));
         this.syncBullets(message.bullets.filter(isBulletState));

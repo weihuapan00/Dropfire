@@ -86,11 +86,13 @@ max_tick_ms = 0.0
 last_loop_lag_ms = 0.0
 max_loop_lag_ms = 0.0
 senders: dict[int, ConnectionSender] = {}
+pending_hit_events: dict[WebSocket, list[dict[str, Any]]] = {}
 
 
 def handle_sender_closed(websocket: WebSocket) -> None:
     """Remove a connection whose outbound sender failed."""
     senders.pop(id(websocket), None)
+    pending_hit_events.pop(websocket, None)
     if websocket in active_connections:
         active_connections.remove(websocket)
 
@@ -164,6 +166,8 @@ async def create_room_endpoint() -> dict[str, str]:
 def broadcast_world_state() -> None:
     """Publish the newest snapshot without waiting for any client's socket."""
     now = monotonic()
+    new_hit_events = list(hit_events)
+    hit_events.clear()
     message = {
         "type": "world_state",
         "round": get_round_snapshot(now),
@@ -194,7 +198,6 @@ def broadcast_world_state() -> None:
             }
             for player_id, player in players.items()
         ],
-        "covers": COVER_WALLS,
         "pickups": list(weapon_pickups),
         "health_pickups": list(health_pickups),
         "bullets": [
@@ -206,15 +209,28 @@ def broadcast_world_state() -> None:
             }
             for bullet in bullets
         ],
-        "hits": list(hit_events),
+        "hits": [],
     }
-    hit_events.clear()
     current_room()["last_broadcast_at"] = now
-    payload = json.dumps(message, separators=(",", ":"))
+    state_payload = json.dumps(message, separators=(",", ":"))
     for connection in active_connections.copy():
         sender = senders.get(id(connection))
         if sender is not None:
-            sender.enqueue(payload)
+            if new_hit_events:
+                pending_hit_events.setdefault(connection, []).extend(new_hit_events)
+            events_to_send = pending_hit_events.get(connection, [])
+            payload = state_payload if not events_to_send else json.dumps(
+                {**message, "hits": events_to_send}, separators=(",", ":")
+            )
+            event_count = len(events_to_send)
+
+            def acknowledge_hits(
+                socket: WebSocket = connection,
+                count: int = event_count,
+            ) -> None:
+                del pending_hit_events.get(socket, [])[:count]
+
+            sender.enqueue(payload, acknowledge_hits)
 
 
 async def game_loop() -> None:
@@ -374,6 +390,15 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
                 separators=(",", ":"),
             )
         )
+        await sender.send_control(
+            json.dumps(
+                {
+                    "type": "arena_config",
+                    "covers": COVER_WALLS,
+                },
+                separators=(",", ":"),
+            )
+        )
         advance_round(monotonic())
         broadcast_world_state()
 
@@ -483,6 +508,7 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
         if sender is not None:
             await sender.close()
             senders.pop(id(websocket), None)
+        pending_hit_events.pop(websocket, None)
         if websocket in active_connections:
             active_connections.remove(websocket)
         player = players.get(player_id) if player_id else None

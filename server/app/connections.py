@@ -5,8 +5,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from contextlib import suppress
+from typing import TypeAlias
 
 from fastapi import WebSocket
+
+
+Snapshot: TypeAlias = tuple[str, Callable[[], None] | None]
 
 
 class ConnectionSender:
@@ -19,7 +23,7 @@ class ConnectionSender:
     ) -> None:
         self.websocket = websocket
         self.on_close = on_close
-        self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
+        self.queue: asyncio.Queue[Snapshot] = asyncio.Queue(maxsize=1)
         self.lock = asyncio.Lock()
         self.closed = False
         self.task = asyncio.create_task(self._run())
@@ -27,16 +31,18 @@ class ConnectionSender:
     async def _run(self) -> None:
         try:
             while True:
-                payload = await self.queue.get()
+                payload, on_sent = await self.queue.get()
                 async with self.lock:
                     await self.websocket.send_text(payload)
+                if on_sent is not None:
+                    on_sent()
         except asyncio.CancelledError:
             raise
         except Exception:
             self.closed = True
             self.on_close(self.websocket)
 
-    def enqueue(self, payload: str) -> None:
+    def enqueue(self, payload: str, on_sent: Callable[[], None] | None = None) -> None:
         """Replace any queued snapshot with the newest one, without blocking."""
         if self.closed:
             return
@@ -44,7 +50,7 @@ class ConnectionSender:
             with suppress(asyncio.QueueEmpty):
                 self.queue.get_nowait()
         with suppress(asyncio.QueueFull):
-            self.queue.put_nowait(payload)
+            self.queue.put_nowait((payload, on_sent))
 
     async def send_control(self, payload: str) -> bool:
         """Send a control frame in order with any in-flight snapshot."""

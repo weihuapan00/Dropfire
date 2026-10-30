@@ -42,7 +42,9 @@ export class GameSocket {
         this.sessionToken = message.session_token;
         sessionStorage.setItem("dropfire-tab-session-token", this.sessionToken);
       }
-      console.info("Server message:", message);
+      if (import.meta.env.DEV && message.type !== "world_state") {
+        console.info("Server message:", message);
+      }
       this.emitMessage(message);
     });
 

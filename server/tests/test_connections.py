@@ -41,3 +41,26 @@ def test_sender_drops_stale_snapshot_while_blocked():
 
     assert sent == ["first", "latest"]
     assert closed == []
+
+
+def test_sender_only_acknowledges_the_snapshot_that_was_sent():
+    async def scenario() -> list[str]:
+        acknowledgements: list[str] = []
+        websocket = FakeWebSocket()
+        sender = ConnectionSender(websocket, lambda _: None)
+
+        sender.enqueue("first", lambda: acknowledgements.append("first"))
+        await asyncio.wait_for(websocket.started.wait(), timeout=1)
+        sender.enqueue("stale", lambda: acknowledgements.append("stale"))
+        sender.enqueue("latest", lambda: acknowledgements.append("latest"))
+        websocket.release.set()
+
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            if len(websocket.sent) >= 2:
+                break
+
+        await sender.close()
+        return acknowledgements
+
+    assert asyncio.run(scenario()) == ["first", "latest"]
