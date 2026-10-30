@@ -41,7 +41,7 @@ app.innerHTML = `
     <section class="lobby-rules">
       <h2>How to play</h2>
       <p><strong>Desktop:</strong> WASD / arrows move · mouse aims and fires · E picks up · R reloads · G switches weapon.</p>
-      <p><strong>Mobile:</strong> left stick moves · right side aims and fires · use SWITCH / PICK / RELOAD buttons.</p>
+      <p><strong>Mobile:</strong> left stick moves · right stick aims and holds to fire · use SWITCH / PICK / RELOAD buttons.</p>
       <p><strong>Phone tip:</strong> tap <em>Fullscreen</em>, or add Dropfire to your home screen to launch without browser tabs.</p>
       <p>Matches last 3 minutes. Ranking uses kills, then total damage. Everyone starts with fists; scarce one-shot knives, pistols, and rifles must be found.</p>
     </section>

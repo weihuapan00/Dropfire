@@ -18,6 +18,7 @@ const RECONCILE_STATIONARY_LERP = 0.18;
 const INTERPOLATION_AT_60_FPS = 0.2;
 const BULLET_INTERPOLATION_AT_60_FPS = 0.55;
 const AUTOMATIC_FIRE_INTENT_INTERVAL_MS = 120;
+const PISTOL_FIRE_INTENT_INTERVAL_MS = 360;
 const RELOAD_RING_RADIUS = 31;
 const MOBILE_JOYSTICK_X = 126;
 const MOBILE_JOYSTICK_Y = 592;
@@ -265,6 +266,7 @@ export class ArenaScene extends Phaser.Scene {
   private localPlayerId: string | null = null;
   private localPlayer: Phaser.GameObjects.Arc | null = null;
   private localWeapon: WeaponType = "fists";
+  private localGunWeapon: WeaponType | null = null;
   private localAmmoInMag = 0;
   private localPlayerIsAlive = true;
   private localPlayerIsReloading = false;
@@ -278,8 +280,10 @@ export class ArenaScene extends Phaser.Scene {
   private livingSpectatorIds: string[] = [];
   private spectatorTargetId: string | null = null;
   private cameraIsFollowingLocalPlayer = false;
-  private automaticFireIsHeld = false;
+  private rangedFireIsHeld = false;
   private nextAutomaticFireAt = 0;
+  private lastEmptyClickAt = 0;
+  private lastAimAngle = 0;
   private lastSentMoveDirection = new Phaser.Math.Vector2();
   private readonly pointerWorldPosition = new Phaser.Math.Vector2();
   private readonly touchMoveDirection = new Phaser.Math.Vector2();
@@ -289,6 +293,7 @@ export class ArenaScene extends Phaser.Scene {
   private touchAimHasFired = false;
   private pressedMobileAction: "switch" | "pickup" | "reload" | null = null;
   private mobileActionPointerId: number | null = null;
+  private lastSwitchAvailable: boolean | null = null;
   private isTouchControlScheme = false;
   private mobileControls!: Phaser.GameObjects.Graphics;
   private aimLine!: Phaser.GameObjects.Graphics;
@@ -327,7 +332,7 @@ export class ArenaScene extends Phaser.Scene {
     this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
     this.isTouchControlScheme = navigator.maxTouchPoints > 0;
     if (this.isTouchControlScheme) {
-      this.input.addPointer(2);
+      this.input.addPointer(3);
     }
 
     this.aimLine = this.add.graphics();
@@ -478,7 +483,7 @@ export class ArenaScene extends Phaser.Scene {
         640,
         680,
         this.isTouchControlScheme
-          ? "Left stick: move  •  Right stick: aim & fire  •  SWITCH / PICK / RELOAD above it"
+          ? "Left stick: move  •  Right stick: aim & hold to fire  •  SWITCH / PICK / RELOAD above it"
           : "Move: WASD / arrows  •  E: pick up  •  R: reload  •  G: switch weapon  •  P: spectate next  •  Fists/Knife: click  •  Pistol: click  •  Rifle: hold left click",
         {
         color: "#96a3b6",
@@ -502,7 +507,7 @@ export class ArenaScene extends Phaser.Scene {
     }
 
     if (!this.localPlayer || !this.localPlayerIsAlive || this.roundPhase !== "active") {
-      this.automaticFireIsHeld = false;
+      this.rangedFireIsHeld = false;
       this.currentMoveDirection.set(0, 0);
       this.aimLine.clear();
       return;
@@ -521,12 +526,12 @@ export class ArenaScene extends Phaser.Scene {
     }
 
     if (
-      this.automaticFireIsHeld &&
-      FIRE_MODES[this.localWeapon] === "automatic" &&
+      this.rangedFireIsHeld &&
+      this.isRangedWeapon() &&
       time >= this.nextAutomaticFireAt
     ) {
       this.fireTowardCurrentAim();
-      this.nextAutomaticFireAt = time + AUTOMATIC_FIRE_INTENT_INTERVAL_MS;
+      this.nextAutomaticFireAt = time + this.fireIntentInterval();
     }
 
     const keyboardDirection = new Phaser.Math.Vector2(
@@ -644,14 +649,20 @@ export class ArenaScene extends Phaser.Scene {
       if (playerState.id === this.localPlayerId) {
         this.localPlayer = player;
         this.localWeapon = playerState.weapon;
+        this.localGunWeapon = playerState.gun_weapon;
         this.localAmmoInMag = playerState.ammo_in_mag;
         this.localPlayerIsAlive = playerState.alive;
         this.localPlayerIsReloading = playerState.reload_progress > 0;
         if (this.localPlayerIsReloading) {
-          this.automaticFireIsHeld = false;
+          this.rangedFireIsHeld = false;
         }
-        if (FIRE_MODES[this.localWeapon] !== "automatic") {
-          this.automaticFireIsHeld = false;
+        if (!this.isRangedWeapon()) {
+          this.rangedFireIsHeld = false;
+        }
+        const switchAvailable = this.canSwitchWeapon();
+        if (this.isTouchControlScheme && switchAvailable !== this.lastSwitchAvailable) {
+          this.lastSwitchAvailable = switchAvailable;
+          this.drawMobileControls();
         }
         if (!this.cameraIsFollowingLocalPlayer) {
           this.cameras.main.startFollow(player, true, 0.14, 0.14);
@@ -931,21 +942,44 @@ export class ArenaScene extends Phaser.Scene {
 
   private getAimAngle(): number {
     if (this.touchAimPointer && this.touchAimDirection.lengthSq() > 0) {
-      return Math.atan2(this.touchAimDirection.y, this.touchAimDirection.x);
+      this.lastAimAngle = Math.atan2(this.touchAimDirection.y, this.touchAimDirection.x);
+      return this.lastAimAngle;
+    }
+
+    if (this.isTouchControlScheme) {
+      if (this.touchMoveDirection.lengthSq() > 0) {
+        this.lastAimAngle = Math.atan2(this.touchMoveDirection.y, this.touchMoveDirection.x);
+      }
+      return this.lastAimAngle;
     }
 
     const player = this.localPlayer;
     if (!player) {
-      return 0;
+      return this.lastAimAngle;
     }
     const pointer = this.input.activePointer;
     pointer.positionToCamera(this.cameras.main, this.pointerWorldPosition);
-    return Phaser.Math.Angle.Between(
+    this.lastAimAngle = Phaser.Math.Angle.Between(
       player.x,
       player.y,
       this.pointerWorldPosition.x,
       this.pointerWorldPosition.y,
     );
+    return this.lastAimAngle;
+  }
+
+  private isRangedWeapon(): boolean {
+    return this.localWeapon === "pistol" || this.localWeapon === "rifle";
+  }
+
+  private fireIntentInterval(): number {
+    return this.localWeapon === "pistol"
+      ? PISTOL_FIRE_INTENT_INTERVAL_MS
+      : AUTOMATIC_FIRE_INTENT_INTERVAL_MS;
+  }
+
+  private canSwitchWeapon(): boolean {
+    return this.isRangedWeapon() || this.localGunWeapon !== null;
   }
 
   private applyPredictedMovement(direction: Phaser.Math.Vector2, delta: number): void {
@@ -1046,6 +1080,7 @@ export class ArenaScene extends Phaser.Scene {
     for (const pickupState of serverPickups) {
       let pickup = this.pickups.get(pickupState.id);
       if (!pickup) {
+        const glow = this.add.circle(0, 0, 50, WEAPON_COLORS[pickupState.weapon], 0.08);
         const pickupRange = this.add.circle(0, 0, PICKUP_HINT_RADIUS);
         pickupRange.setStrokeStyle(2, WEAPON_COLORS[pickupState.weapon], 0.34);
         const marker = this.add
@@ -1061,7 +1096,7 @@ export class ArenaScene extends Phaser.Scene {
             padding: { x: 4, y: 2 },
           })
           .setOrigin(0.5);
-        pickup = this.add.container(pickupState.x, pickupState.y, [pickupRange, marker, label]);
+        pickup = this.add.container(pickupState.x, pickupState.y, [glow, pickupRange, marker, label]);
         this.pickups.set(pickupState.id, pickup);
       }
 
@@ -1096,6 +1131,14 @@ export class ArenaScene extends Phaser.Scene {
       }
 
       cover.clear();
+      cover.fillStyle(0x02060b, 0.5);
+      cover.fillRoundedRect(
+        coverState.x - coverState.width / 2 + 10,
+        coverState.y - coverState.height / 2 + 12,
+        coverState.width,
+        coverState.height,
+        10,
+      );
       cover.fillStyle(0x34445b, 1);
       cover.fillRoundedRect(
         coverState.x - coverState.width / 2,
@@ -1319,30 +1362,172 @@ export class ArenaScene extends Phaser.Scene {
     }
   }
 
-  private drawArena(): void {
-    const graphics = this.add.graphics();
-    graphics.fillStyle(0x08111c, 1);
-    graphics.fillRoundedRect(48, 48, WORLD_WIDTH - 96, WORLD_HEIGHT - 96, 22);
-    graphics.fillStyle(0x0c1928, 0.52);
-    for (let x = 120; x < WORLD_WIDTH - 96; x += 240) {
-      for (let y = 120; y < WORLD_HEIGHT - 96; y += 240) {
-        graphics.fillCircle(x, y, 92);
+  private createArenaTextures(): void {
+    if (!this.textures.exists("arena-floor")) {
+      const floor = this.textures.createCanvas("arena-floor", 256, 256);
+      if (floor) {
+        const context = floor.getContext();
+        context.fillStyle = "#0a1624";
+        context.fillRect(0, 0, 256, 256);
+        context.fillStyle = "rgba(34, 66, 92, 0.22)";
+        context.fillRect(0, 0, 128, 128);
+        context.fillRect(128, 128, 128, 128);
+        context.strokeStyle = "rgba(96, 150, 190, 0.2)";
+        context.lineWidth = 2;
+        context.strokeRect(1, 1, 126, 126);
+        context.strokeRect(129, 129, 126, 126);
+        context.strokeStyle = "rgba(6, 16, 28, 0.7)";
+        context.beginPath();
+        context.moveTo(128, 0);
+        context.lineTo(128, 256);
+        context.moveTo(0, 128);
+        context.lineTo(256, 128);
+        context.stroke();
+        for (let index = 0; index < 110; index += 1) {
+          context.fillStyle = `rgba(150, 205, 235, ${Math.random() * 0.05})`;
+          context.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+        }
+        floor.refresh();
       }
     }
-    graphics.lineStyle(1, 0x29415a, 0.62);
 
+    if (!this.textures.exists("arena-glow")) {
+      const glow = this.textures.createCanvas("arena-glow", 256, 256);
+      if (glow) {
+        const context = glow.getContext();
+        const gradient = context.createRadialGradient(128, 128, 0, 128, 128, 128);
+        gradient.addColorStop(0, "rgba(255, 255, 255, 0.9)");
+        gradient.addColorStop(0.45, "rgba(255, 255, 255, 0.28)");
+        gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, 256, 256);
+        glow.refresh();
+      }
+    }
+
+    if (!this.textures.exists("arena-vignette")) {
+      const vignette = this.textures.createCanvas("arena-vignette", 512, 512);
+      if (vignette) {
+        const context = vignette.getContext();
+        const gradient = context.createRadialGradient(256, 256, 140, 256, 256, 360);
+        gradient.addColorStop(0, "rgba(0, 0, 0, 0)");
+        gradient.addColorStop(0.68, "rgba(0, 0, 0, 0.32)");
+        gradient.addColorStop(1, "rgba(0, 0, 0, 0.82)");
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, 512, 512);
+        vignette.refresh();
+      }
+    }
+
+    if (!this.textures.exists("arena-dust")) {
+      const dust = this.textures.createCanvas("arena-dust", 8, 8);
+      if (dust) {
+        const context = dust.getContext();
+        const gradient = context.createRadialGradient(4, 4, 0, 4, 4, 4);
+        gradient.addColorStop(0, "rgba(220, 245, 255, 1)");
+        gradient.addColorStop(1, "rgba(220, 245, 255, 0)");
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, 8, 8);
+        dust.refresh();
+      }
+    }
+  }
+
+  private drawArena(): void {
+    this.createArenaTextures();
+    const arenaWidth = WORLD_WIDTH - 96;
+    const arenaHeight = WORLD_HEIGHT - 96;
+
+    const floor = this.add
+      .tileSprite(48, 48, arenaWidth, arenaHeight, "arena-floor")
+      .setOrigin(0)
+      .setDepth(-20);
+    const maskShape = this.make.graphics({}, false);
+    maskShape.fillStyle(0xffffff);
+    maskShape.fillRoundedRect(48, 48, arenaWidth, arenaHeight, 22);
+    floor.setMask(maskShape.createGeometryMask());
+
+    this.add.image(520, 300, "arena-glow")
+      .setScale(7)
+      .setTint(0x1fd8b4)
+      .setAlpha(0.1)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(-19);
+    this.add.image(2050, 1130, "arena-glow")
+      .setScale(8)
+      .setTint(0xff5a4f)
+      .setAlpha(0.09)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(-19);
+    this.add.image(1280, 720, "arena-glow")
+      .setScale(10)
+      .setTint(0x3f7dff)
+      .setAlpha(0.07)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(-19);
+
+    const emblem = this.add.graphics().setDepth(-18);
+    emblem.lineStyle(2, 0x2f6a7d, 0.45);
+    emblem.strokeCircle(1280, 720, 190);
+    emblem.strokeCircle(1280, 720, 280);
+    emblem.lineStyle(1, 0x2f6a7d, 0.3);
+    emblem.strokeCircle(1280, 720, 360);
+    for (let index = 0; index < 8; index += 1) {
+      const angle = (Math.PI * 2 * index) / 8;
+      emblem.lineBetween(
+        1280 + Math.cos(angle) * 190,
+        720 + Math.sin(angle) * 190,
+        1280 + Math.cos(angle) * 360,
+        720 + Math.sin(angle) * 360,
+      );
+    }
+
+    const grid = this.add.graphics().setDepth(-17);
+    grid.lineStyle(1, 0x21415a, 0.3);
     for (let x = 80; x <= WORLD_WIDTH - 80; x += 40) {
-      graphics.lineBetween(x, 64, x, WORLD_HEIGHT - 64);
+      grid.lineBetween(x, 64, x, WORLD_HEIGHT - 64);
     }
-
     for (let y = 80; y <= WORLD_HEIGHT - 80; y += 40) {
-      graphics.lineBetween(64, y, WORLD_WIDTH - 64, y);
+      grid.lineBetween(64, y, WORLD_WIDTH - 64, y);
     }
 
-    graphics.lineStyle(3, 0x4b6d88, 0.95);
-    graphics.strokeRoundedRect(48, 48, WORLD_WIDTH - 96, WORLD_HEIGHT - 96, 22);
-    graphics.lineStyle(1, 0x69f4c1, 0.3);
-    graphics.strokeRoundedRect(58, 58, WORLD_WIDTH - 116, WORLD_HEIGHT - 116, 16);
+    this.add.image(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, "arena-vignette")
+      .setDisplaySize(WORLD_WIDTH, WORLD_HEIGHT)
+      .setDepth(-16);
+
+    const border = this.add.graphics().setDepth(-15);
+    border.lineStyle(3, 0x4b6d88, 0.95);
+    border.strokeRoundedRect(48, 48, arenaWidth, arenaHeight, 22);
+    border.lineStyle(1, 0x69f4c1, 0.32);
+    border.strokeRoundedRect(60, 60, WORLD_WIDTH - 120, WORLD_HEIGHT - 120, 16);
+    border.lineStyle(4, 0x69f4c1, 0.55);
+    const corner = 70;
+    border.lineBetween(48, 48 + corner, 48, 48);
+    border.lineBetween(48, 48, 48 + corner, 48);
+    border.lineBetween(WORLD_WIDTH - 48 - corner, 48, WORLD_WIDTH - 48, 48);
+    border.lineBetween(WORLD_WIDTH - 48, 48, WORLD_WIDTH - 48, 48 + corner);
+    border.lineBetween(48, WORLD_HEIGHT - 48 - corner, 48, WORLD_HEIGHT - 48);
+    border.lineBetween(48, WORLD_HEIGHT - 48, 48 + corner, WORLD_HEIGHT - 48);
+    border.lineBetween(WORLD_WIDTH - 48 - corner, WORLD_HEIGHT - 48, WORLD_WIDTH - 48, WORLD_HEIGHT - 48);
+    border.lineBetween(WORLD_WIDTH - 48, WORLD_HEIGHT - 48 - corner, WORLD_WIDTH - 48, WORLD_HEIGHT - 48);
+
+    const dustZone = new Phaser.GameObjects.Particles.Zones.RandomZone({
+      getRandomPoint: (point) => {
+        point.x = Phaser.Math.Between(90, WORLD_WIDTH - 90);
+        point.y = Phaser.Math.Between(90, WORLD_HEIGHT - 90);
+      },
+    });
+    this.add.particles(0, 0, "arena-dust", {
+      emitZone: dustZone,
+      lifespan: 7000,
+      speedX: { min: -10, max: 10 },
+      speedY: { min: -18, max: -6 },
+      scale: { start: 1, end: 0.2 },
+      alpha: { start: 0.28, end: 0 },
+      quantity: 1,
+      frequency: 140,
+      blendMode: "ADD",
+    }).setDepth(-14);
   }
 
   private drawAimLine(): void {
@@ -1422,7 +1607,8 @@ export class ArenaScene extends Phaser.Scene {
     if (this.localWeapon === "pistol" || this.localWeapon === "rifle") {
       if (this.localAmmoInMag > 0) {
         soundscape.playShot(this.localWeapon);
-      } else {
+      } else if (this.time.now - this.lastEmptyClickAt > 400) {
+        this.lastEmptyClickAt = this.time.now;
         soundscape.playEmptyClick();
       }
     }
@@ -1445,8 +1631,10 @@ export class ArenaScene extends Phaser.Scene {
         this.gameSocket.send({ type: "pickup_intent" });
       } else if (mobileAction === "reload") {
         this.gameSocket.send({ type: "reload_intent" });
-      } else {
+      } else if (this.canSwitchWeapon()) {
         this.gameSocket.send({ type: "switch_weapon" });
+      } else {
+        soundscape.playEmptyClick();
       }
       return;
     }
@@ -1489,17 +1677,17 @@ export class ArenaScene extends Phaser.Scene {
       this.touchAimPointer = null;
       this.touchAimDirection.set(0, 0);
       this.touchAimHasFired = false;
-      this.automaticFireIsHeld = false;
+      this.rangedFireIsHeld = false;
     }
     if (!this.isTouchPointer(pointer)) {
-      this.automaticFireIsHeld = false;
+      this.rangedFireIsHeld = false;
     }
   }
 
   private startFiringAt(pointer: Phaser.Input.Pointer): void {
     this.fireTowardPointer(pointer);
     if (FIRE_MODES[this.localWeapon] === "automatic") {
-      this.automaticFireIsHeld = true;
+      this.rangedFireIsHeld = true;
       this.nextAutomaticFireAt = this.time.now + AUTOMATIC_FIRE_INTENT_INTERVAL_MS;
     }
   }
@@ -1510,9 +1698,9 @@ export class ArenaScene extends Phaser.Scene {
     }
     this.touchAimHasFired = true;
     this.fireTowardDirection(this.touchAimDirection.x, this.touchAimDirection.y);
-    if (FIRE_MODES[this.localWeapon] === "automatic") {
-      this.automaticFireIsHeld = true;
-      this.nextAutomaticFireAt = this.time.now + AUTOMATIC_FIRE_INTENT_INTERVAL_MS;
+    if (this.isRangedWeapon()) {
+      this.rangedFireIsHeld = true;
+      this.nextAutomaticFireAt = this.time.now + this.fireIntentInterval();
     }
   }
 
@@ -1587,10 +1775,18 @@ export class ArenaScene extends Phaser.Scene {
       ["reload", MOBILE_RELOAD_X],
     ];
     for (const [action, x] of actionButtons) {
+      const available = action !== "switch" || this.canSwitchWeapon();
       const pressed = this.pressedMobileAction === action;
-      this.mobileControls.fillStyle(pressed ? 0x2b3f57 : 0x111a27, pressed ? 0.95 : 0.78);
+      this.mobileControls.fillStyle(
+        pressed ? 0x2b3f57 : 0x111a27,
+        (pressed ? 0.95 : 0.78) * (available ? 1 : 0.45),
+      );
       this.mobileControls.fillCircle(x, MOBILE_ACTION_Y, MOBILE_ACTION_DRAW_RADIUS);
-      this.mobileControls.lineStyle(3, pressed ? 0x8cffd2 : 0xf5c55b, pressed ? 1 : 0.85);
+      this.mobileControls.lineStyle(
+        3,
+        pressed ? 0x8cffd2 : available ? 0xf5c55b : 0x5a6576,
+        pressed ? 1 : available ? 0.85 : 0.5,
+      );
       this.mobileControls.strokeCircle(x, MOBILE_ACTION_Y, MOBILE_ACTION_DRAW_RADIUS);
     }
   }
