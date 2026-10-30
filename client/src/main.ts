@@ -23,6 +23,17 @@ app.innerHTML = `
     <div class="room-heading"><h2>Open rooms</h2><span>LIVE</span></div>
     <div id="room-list"></div>
   </section>
+  <section class="room-lobby" id="room-lobby" hidden>
+    <div class="lobby-brand"><span class="brand-mark">DF</span><span>DROP<span>FIRE</span></span></div>
+    <p class="eyebrow">PRIVATE MATCH</p>
+    <h1>Room <em id="waiting-room-code">------</em></h1>
+    <p class="lobby-intro">Wait for real players, add up to three AI opponents, then start when you are ready.</p>
+    <div class="room-heading"><h2>Players</h2><span id="waiting-player-count">0 / 4</span></div>
+    <ul class="waiting-player-list" id="waiting-player-list"></ul>
+    <button class="test-button primary-action" id="add-ai-bot" type="button">Add AI bot <span>+</span></button>
+    <button class="test-button start-match" id="start-match" type="button" disabled>Start match <span>→</span></button>
+    <p id="waiting-message" class="waiting-message">Connecting to room…</p>
+  </section>
   <main class="shell" id="game-shell" hidden>
     <header class="topbar">
       <div class="brand">
@@ -42,7 +53,6 @@ app.innerHTML = `
 
     <section class="layout">
       <div class="game-frame">
-        <span class="stage-label">Weapon pickup arena</span>
         <div id="game-root"></div>
         <button class="mobile-fullscreen" id="mobile-fullscreen" type="button" hidden>⛶ Full screen</button>
       </div>
@@ -62,30 +72,6 @@ app.innerHTML = `
           <h2>Shared loot</h2>
           <p>The server removes a collected pickup and broadcasts the updated world to every player.</p>
         </div>
-
-        <div class="test-panel">
-          <h2>Test panel</h2>
-          <p>Create a server-side test player, then send it to an available pickup without opening another browser.</p>
-          <button class="test-button" id="spawn-test-bot" type="button">Add test player</button>
-          <button class="test-button" id="respawn-test-bot" type="button">Respawn selected test player</button>
-          <button class="test-button" id="reset-test-round" type="button">Reset test round</button>
-          <button class="test-button" id="refill-weapons" type="button">Refill weapons</button>
-          <label class="test-label" for="test-bot-select">Control</label>
-          <select class="test-select" id="test-bot-select" disabled>
-            <option value="">Add a test player first</option>
-          </select>
-          <div class="bot-dpad" aria-label="Move selected test player">
-            <button class="test-button" data-bot-x="0" data-bot-y="-1" type="button">↑</button>
-            <button class="test-button" data-bot-x="-1" data-bot-y="0" type="button">←</button>
-            <button class="test-button" data-bot-x="0" data-bot-y="1" type="button">↓</button>
-            <button class="test-button" data-bot-x="1" data-bot-y="0" type="button">→</button>
-          </div>
-          <div class="pickup-actions">
-            <button class="test-button" data-pickup-id="knife-1" type="button">Get knife</button>
-            <button class="test-button" data-pickup-id="pistol-1" type="button">Get pistol</button>
-            <button class="test-button" data-pickup-id="rifle-1" type="button">Get rifle</button>
-          </div>
-        </div>
       </aside>
     </section>
   </main>
@@ -94,14 +80,8 @@ app.innerHTML = `
 const statusElement = document.querySelector<HTMLElement>("#server-status");
 const statusText = document.querySelector<HTMLElement>("#server-status-text");
 const playerIdElement = document.querySelector<HTMLElement>("#player-id");
-const spawnTestBotButton = document.querySelector<HTMLButtonElement>("#spawn-test-bot");
-const respawnTestBotButton = document.querySelector<HTMLButtonElement>("#respawn-test-bot");
-const resetTestRoundButton = document.querySelector<HTMLButtonElement>("#reset-test-round");
-const refillWeaponsButton = document.querySelector<HTMLButtonElement>("#refill-weapons");
-const testBotSelect = document.querySelector<HTMLSelectElement>("#test-bot-select");
-const pickupButtons = document.querySelectorAll<HTMLButtonElement>("[data-pickup-id]");
-const botMoveButtons = document.querySelectorAll<HTMLButtonElement>("[data-bot-x]");
 const lobby = document.querySelector<HTMLElement>("#lobby");
+const roomLobby = document.querySelector<HTMLElement>("#room-lobby");
 const gameShell = document.querySelector<HTMLElement>("#game-shell");
 const createRoomButton = document.querySelector<HTMLButtonElement>("#create-room");
 const joinRoomButton = document.querySelector<HTMLButtonElement>("#join-room");
@@ -112,18 +92,27 @@ const roomCodeElement = document.querySelector<HTMLElement>("#room-code");
 const copyRoomCodeButton = document.querySelector<HTMLButtonElement>("#copy-room-code");
 const gameFrame = document.querySelector<HTMLElement>(".game-frame");
 const mobileFullscreenButton = document.querySelector<HTMLButtonElement>("#mobile-fullscreen");
+const waitingRoomCode = document.querySelector<HTMLElement>("#waiting-room-code");
+const waitingPlayerCount = document.querySelector<HTMLElement>("#waiting-player-count");
+const waitingPlayerList = document.querySelector<HTMLUListElement>("#waiting-player-list");
+const waitingMessage = document.querySelector<HTMLElement>("#waiting-message");
+const addAiBotButton = document.querySelector<HTMLButtonElement>("#add-ai-bot");
+const startMatchButton = document.querySelector<HTMLButtonElement>("#start-match");
 
-interface TestPlayerState {
+interface WaitingPlayerState {
   id: string;
-  weapon: string;
-  alive: boolean;
   is_bot: boolean;
-  owner_id: string | null;
+  connected: boolean;
+}
+
+interface WaitingRoundState {
+  phase: "waiting" | "active" | "ending";
 }
 
 let localPlayerId: string | null = null;
 let currentRoomCode: string | null = null;
 let gameSocket: GameSocket | null = null;
+let arenaStarted = false;
 
 function usesMobileBattlefield(): boolean {
   return (
@@ -146,7 +135,7 @@ async function enterMobileFullscreen(): Promise<void> {
   }
 }
 
-function isTestPlayerState(value: unknown): value is TestPlayerState {
+function isWaitingPlayerState(value: unknown): value is WaitingPlayerState {
   if (typeof value !== "object" || value === null) {
     return false;
   }
@@ -154,38 +143,40 @@ function isTestPlayerState(value: unknown): value is TestPlayerState {
   const player = value as Record<string, unknown>;
   return (
     typeof player.id === "string" &&
-    typeof player.weapon === "string" &&
-    typeof player.alive === "boolean" &&
     typeof player.is_bot === "boolean" &&
-    (typeof player.owner_id === "string" || player.owner_id === null)
+    typeof player.connected === "boolean"
   );
 }
 
-function renderTestBots(players: TestPlayerState[]): void {
-  if (!testBotSelect || !localPlayerId) {
-    return;
-  }
-
-  const ownedBots = players.filter(
-    (player) => player.is_bot && player.owner_id === localPlayerId,
+function isWaitingRoundState(value: unknown): value is WaitingRoundState {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    ["waiting", "active", "ending"].includes((value as Record<string, unknown>).phase as string)
   );
-  const previousSelection = testBotSelect.value;
-  testBotSelect.innerHTML = "";
+}
 
-  if (ownedBots.length === 0) {
-    testBotSelect.add(new Option("Add a test player first", ""));
-    testBotSelect.disabled = true;
+function renderWaitingRoom(players: WaitingPlayerState[], round: WaitingRoundState): void {
+  if (!waitingPlayerList || !waitingPlayerCount) {
     return;
   }
-
-  for (const [index, bot] of ownedBots.entries()) {
-    const status = bot.alive ? bot.weapon : "ELIMINATED";
-    testBotSelect.add(new Option(`Test player ${index + 1} · ${status}`, bot.id));
+  waitingPlayerCount.textContent = `${players.length} / 4`;
+  waitingPlayerList.innerHTML = "";
+  for (const player of players) {
+    const item = document.createElement("li");
+    const identity = player.is_bot ? "AI BOT" : `HUMAN P-${player.id.slice(0, 6)}`;
+    const self = player.id === localPlayerId ? " · YOU" : "";
+    const connection = player.connected ? "READY" : "RECONNECTING";
+    item.textContent = `${identity}${self} · ${connection}`;
+    item.dataset.kind = player.is_bot ? "bot" : "human";
+    waitingPlayerList.append(item);
   }
-  testBotSelect.disabled = false;
-  testBotSelect.value = ownedBots.some((bot) => bot.id === previousSelection)
-    ? previousSelection
-    : ownedBots[0].id;
+  if (addAiBotButton) {
+    addAiBotButton.disabled = players.length >= 4 || round.phase !== "waiting";
+  }
+  if (startMatchButton) {
+    startMatchButton.disabled = players.length < 2 || round.phase !== "waiting";
+  }
 }
 
 function renderConnectionState(state: ConnectionState): void {
@@ -218,26 +209,51 @@ function apiUrl(path: string): string {
   return `${baseUrl.replace(/\/$/, "")}${path}`;
 }
 
-function startGame(roomCode: string): void {
-  currentRoomCode = roomCode;
+function launchArena(): void {
+  if (arenaStarted || !gameSocket) return;
+  arenaStarted = true;
   const mobileBattlefield = usesMobileBattlefield();
   document.body.classList.toggle("mobile-battlefield", mobileBattlefield);
   if (mobileFullscreenButton) mobileFullscreenButton.hidden = !mobileBattlefield;
-  roomCodeElement && (roomCodeElement.textContent = roomCode);
-  lobby?.setAttribute("hidden", "");
+  roomLobby?.setAttribute("hidden", "");
   gameShell?.removeAttribute("hidden");
-  gameSocket = new GameSocket(roomCode);
-  createGame("game-root", gameSocket);
+  createGame("game-root", gameSocket, localPlayerId);
   gameSocket.onStateChange(renderConnectionState);
-  gameSocket.onMessage((message) => {
-  if (message.type === "server_connected" && typeof message.player_id === "string") {
-    localPlayerId = message.player_id;
-    renderPlayerId(message.player_id);
-  }
+}
 
-  if (message.type === "world_state" && Array.isArray(message.players)) {
-    renderTestBots(message.players.filter(isTestPlayerState));
-  }
+function enterRoom(roomCode: string): void {
+  currentRoomCode = roomCode;
+  arenaStarted = false;
+  roomCodeElement && (roomCodeElement.textContent = roomCode);
+  waitingRoomCode && (waitingRoomCode.textContent = roomCode);
+  waitingMessage && (waitingMessage.textContent = "Connecting to room…");
+  lobby?.setAttribute("hidden", "");
+  roomLobby?.removeAttribute("hidden");
+  gameSocket = new GameSocket(roomCode);
+  gameSocket.onStateChange((state) => {
+    renderConnectionState(state);
+    if (state === "disconnected" && waitingMessage) {
+      waitingMessage.textContent = "Reconnecting to room…";
+    }
+  });
+  gameSocket.onMessage((message) => {
+    if (message.type === "server_connected" && typeof message.player_id === "string") {
+      localPlayerId = message.player_id;
+      renderPlayerId(message.player_id);
+      if (waitingMessage) waitingMessage.textContent = "Waiting for players…";
+    }
+
+    if (
+      message.type === "world_state" &&
+      Array.isArray(message.players) &&
+      isWaitingRoundState(message.round)
+    ) {
+      const players = message.players.filter(isWaitingPlayerState);
+      renderWaitingRoom(players, message.round);
+      if (message.round.phase === "active") {
+        launchArena();
+      }
+    }
   });
   gameSocket.connect();
 }
@@ -257,7 +273,7 @@ async function refreshRooms(): Promise<void> {
     const button = document.createElement("button");
     button.className = "test-button";
     button.textContent = `${room.code} · ${room.human_players} human · ${room.players}/${room.max_players} total · ${room.phase}`;
-    button.addEventListener("click", () => startGame(room.code));
+    button.addEventListener("click", () => enterRoom(room.code));
     roomList.append(button);
   }
 }
@@ -265,11 +281,11 @@ async function refreshRooms(): Promise<void> {
 createRoomButton?.addEventListener("click", async () => {
   const response = await fetch(apiUrl("/api/rooms"), { method: "POST" });
   const room = await response.json() as { code: string };
-  startGame(room.code);
+  enterRoom(room.code);
 });
 joinRoomButton?.addEventListener("click", () => {
   const code = roomCodeInput?.value.trim().toUpperCase() ?? "";
-  if (/^[A-Z2-9]{6}$/.test(code)) startGame(code);
+  if (/^[A-Z2-9]{6}$/.test(code)) enterRoom(code);
   else if (lobbyMessage) lobbyMessage.textContent = "Enter a six-character room code.";
 });
 copyRoomCodeButton?.addEventListener("click", async () => {
@@ -278,43 +294,8 @@ copyRoomCodeButton?.addEventListener("click", async () => {
 mobileFullscreenButton?.addEventListener("click", () => {
   void enterMobileFullscreen();
 });
-spawnTestBotButton?.addEventListener("click", () => gameSocket?.send({ type: "spawn_test_bot" }));
-respawnTestBotButton?.addEventListener("click", () => {
-  const playerId = testBotSelect?.value;
-  if (playerId) {
-    gameSocket?.send({ type: "debug_respawn_bot", player_id: playerId });
-  }
-});
-resetTestRoundButton?.addEventListener("click", () =>
-  gameSocket?.send({ type: "debug_reset_test_round" }),
-);
-refillWeaponsButton?.addEventListener("click", () =>
-  gameSocket?.send({ type: "debug_reset_weapon_pickups" }),
-);
-for (const button of pickupButtons) {
-  button.addEventListener("click", () => {
-    const playerId = testBotSelect?.value;
-    const pickupId = button.dataset.pickupId;
-    if (playerId && pickupId) {
-      gameSocket?.send({ type: "debug_collect_pickup", player_id: playerId, pickup_id: pickupId });
-    }
-  });
-}
-for (const button of botMoveButtons) {
-  button.addEventListener("click", () => {
-    const playerId = testBotSelect?.value;
-    const directionX = Number(button.dataset.botX);
-    const directionY = Number(button.dataset.botY);
-    if (playerId) {
-      gameSocket?.send({
-        type: "debug_move_bot",
-        player_id: playerId,
-        direction_x: directionX,
-        direction_y: directionY,
-      });
-    }
-  });
-}
+addAiBotButton?.addEventListener("click", () => gameSocket?.send({ type: "add_ai_bot" }));
+startMatchButton?.addEventListener("click", () => gameSocket?.send({ type: "start_match" }));
 void refreshRooms();
 window.setInterval(() => {
   if (!lobby?.hasAttribute("hidden")) {

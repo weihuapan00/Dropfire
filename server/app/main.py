@@ -116,7 +116,8 @@ bullets: MutableSequence[dict[str, Any]] = RoomList("bullets")
 weapon_pickups: MutableSequence[dict[str, Any]]
 round_state: MutableMapping[str, Any] = RoomMapping("round_state")
 MAX_PLAYERS = 4
-FILL_BOT_TARGET = 1
+BOT_PREFERRED_RANGES = {"knife": 70.0, "pistol": 330.0, "rifle": 500.0}
+BOT_FIRE_RANGES = {"pistol": 500.0, "rifle": 1100.0}
 WEAPON_TYPES = {"fists", "knife", "pistol", "rifle"}
 RANGED_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
     "pistol": {
@@ -194,7 +195,13 @@ def create_room() -> str:
         "players": {},
         "bullets": [],
         "weapon_pickups": create_initial_weapon_pickups(),
-        "round_state": {"phase": "waiting", "number": 0, "winner_id": None, "ends_at": None},
+        "round_state": {
+            "phase": "waiting",
+            "number": 0,
+            "winner_id": None,
+            "ends_at": None,
+            "start_requested": False,
+        },
     }
     return code
 
@@ -573,6 +580,7 @@ async def game_loop() -> None:
                 advance_respawns(now)
                 advance_reloads(now)
                 advance_melee_attacks(now)
+                advance_fill_bot_ai()
                 for player in players.values():
                     advance_player_movement(player, elapsed)
                 advance_bullets(elapsed)
@@ -707,9 +715,9 @@ def get_round_snapshot(now: float) -> dict[str, Any]:
 
 
 def advance_round(now: float) -> None:
-    """Advance the continuous three-minute deathmatch clock."""
+    """Advance a manually started three-minute deathmatch clock."""
     if round_state["phase"] == "waiting":
-        if len(players) >= MIN_PLAYERS_TO_START_ROUND:
+        if round_state["start_requested"] and len(players) >= MIN_PLAYERS_TO_START_ROUND:
             start_round(now)
         return
 
@@ -789,7 +797,7 @@ def respawn_test_bot(owner_id: str, message: dict[str, Any]) -> bool:
 
 
 def create_fill_bot() -> None:
-    """Add one server-owned stationary opponent at a random valid spawn position."""
+    """Add one server-owned AI opponent at a random valid spawn position."""
     for _ in range(20):
         x = uniform(ARENA_MIN_X + PLAYER_RADIUS, ARENA_MAX_X - PLAYER_RADIUS)
         y = uniform(ARENA_MIN_Y + PLAYER_RADIUS, ARENA_MAX_Y - PLAYER_RADIUS)
@@ -849,7 +857,7 @@ def remove_one_fill_bot() -> bool:
 
 
 def rebalance_fill_bots() -> None:
-    """Fill a solo human's room with bots, while preserving slots for real players."""
+    """Remove AI bots only after the final human leaves a room."""
     human_players = [player for player in players.values() if not player["is_bot"]]
     if not human_players:
         for player_id, player in players.copy().items():
@@ -858,16 +866,109 @@ def rebalance_fill_bots() -> None:
         round_state["phase"] = "waiting"
         round_state["winner_id"] = None
         round_state["ends_at"] = None
+        round_state["start_requested"] = False
         return
 
-    if len(human_players) == 1:
-        fill_bot_count = sum(
-            player["is_bot"] and player["owner_id"] is None
+
+
+def add_fill_bot(requester_id: str) -> bool:
+    """Add one explicit lobby-selected AI opponent to a room with space."""
+    requester = players.get(requester_id)
+    if (
+        requester is None
+        or requester["is_bot"]
+        or not requester["connected"]
+        or len(players) >= MAX_PLAYERS
+    ):
+        return False
+    create_fill_bot()
+    return True
+
+
+def request_match_start(requester_id: str) -> bool:
+    """Allow a connected human to begin a lobby once it has two participants."""
+    requester = players.get(requester_id)
+    if (
+        requester is None
+        or requester["is_bot"]
+        or not requester["connected"]
+        or len(players) < MIN_PLAYERS_TO_START_ROUND
+        or round_state["phase"] != "waiting"
+    ):
+        return False
+    round_state["start_requested"] = True
+    return True
+
+
+def set_bot_move_direction(bot: dict[str, Any], destination_x: float, destination_y: float) -> float:
+    """Point a bot at a destination and return the remaining distance."""
+    direction_x = destination_x - bot["x"]
+    direction_y = destination_y - bot["y"]
+    distance = hypot(direction_x, direction_y)
+    if distance == 0:
+        bot["move_x"] = 0.0
+        bot["move_y"] = 0.0
+        return 0.0
+    bot["move_x"] = direction_x / distance
+    bot["move_y"] = direction_y / distance
+    return distance
+
+
+def advance_fill_bot_ai() -> None:
+    """Run a small server-authoritative combat loop for automatic practice bots."""
+    if not round_is_active():
+        for bot in players.values():
+            if bot["is_bot"] and bot["owner_id"] is None:
+                bot["move_x"] = 0.0
+                bot["move_y"] = 0.0
+        return
+
+    for bot in players.values():
+        if not bot["is_bot"] or bot["owner_id"] is not None or not bot["alive"]:
+            continue
+
+        targets = [
+            player
             for player in players.values()
-        )
-        while fill_bot_count < FILL_BOT_TARGET and len(players) < MAX_PLAYERS:
-            create_fill_bot()
-            fill_bot_count += 1
+            if not player["is_bot"] and player["alive"] and player["connected"]
+        ]
+        if not targets:
+            bot["move_x"] = 0.0
+            bot["move_y"] = 0.0
+            continue
+
+        target = min(targets, key=lambda player: hypot(player["x"] - bot["x"], player["y"] - bot["y"]))
+
+        if bot["weapon"] == "fists":
+            ranged_pickups = [pickup for pickup in weapon_pickups if pickup["weapon"] in RANGED_WEAPON_SETTINGS]
+            pickup_choices = ranged_pickups or list(weapon_pickups)
+            if pickup_choices:
+                pickup = min(
+                    pickup_choices,
+                    key=lambda item: hypot(item["x"] - bot["x"], item["y"] - bot["y"]),
+                )
+                pickup_distance = set_bot_move_direction(bot, pickup["x"], pickup["y"])
+                if pickup_distance <= PLAYER_RADIUS + PICKUP_RADIUS:
+                    collect_weapon_pickup(bot)
+                continue
+
+        distance_to_target = set_bot_move_direction(bot, target["x"], target["y"])
+        direction_x = target["x"] - bot["x"]
+        direction_y = target["y"] - bot["y"]
+        preferred_range = BOT_PREFERRED_RANGES.get(bot["weapon"], 240.0)
+
+        if distance_to_target <= preferred_range:
+            # Strafe instead of walking directly into the target once close enough.
+            bot["move_x"] = -direction_y / max(distance_to_target, 1.0)
+            bot["move_y"] = direction_x / max(distance_to_target, 1.0)
+
+        if bot["weapon"] == "knife" and distance_to_target <= KNIFE_REACH:
+            attack_with_knife(bot, {"direction_x": direction_x, "direction_y": direction_y})
+        elif bot["weapon"] in BOT_FIRE_RANGES:
+            if bot["ammo_in_mag"] <= 0:
+                reload_weapon(bot)
+            elif distance_to_target <= BOT_FIRE_RANGES[bot["weapon"]]:
+                fire_weapon(bot, {"direction_x": direction_x, "direction_y": direction_y})
 
 
 def remove_expired_disconnections(now: float) -> None:
@@ -1050,6 +1151,17 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
 
             if message.get("type") == "pickup_intent":
                 collect_weapon_pickup(players[player_id])
+                continue
+
+            if message.get("type") == "add_ai_bot":
+                if add_fill_bot(player_id):
+                    await broadcast_world_state()
+                continue
+
+            if message.get("type") == "start_match":
+                if request_match_start(player_id):
+                    advance_round(monotonic())
+                    await broadcast_world_state()
                 continue
 
             if message.get("type") == "spawn_test_bot":

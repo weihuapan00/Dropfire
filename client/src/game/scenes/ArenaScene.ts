@@ -61,6 +61,7 @@ interface PlayerState {
   kills: number;
   respawn_ends_in_seconds: number;
   spawn_protection_ends_in_seconds: number;
+  is_bot: boolean;
 }
 
 interface PickupState {
@@ -119,6 +120,7 @@ function isPlayerState(value: unknown): value is PlayerState {
     typeof player.kills === "number" &&
     typeof player.respawn_ends_in_seconds === "number" &&
     typeof player.spawn_protection_ends_in_seconds === "number"
+    && typeof player.is_bot === "boolean"
   );
 }
 
@@ -230,8 +232,12 @@ export class ArenaScene extends Phaser.Scene {
   private pickupKey!: Phaser.Input.Keyboard.Key;
   private spectateKey!: Phaser.Input.Keyboard.Key;
 
-  constructor(private readonly gameSocket: GameSocket) {
+  constructor(
+    private readonly gameSocket: GameSocket,
+    initialLocalPlayerId: string | null,
+  ) {
     super("arena");
+    this.localPlayerId = initialLocalPlayerId;
   }
 
   create(): void {
@@ -459,13 +465,15 @@ export class ArenaScene extends Phaser.Scene {
       let player = this.players.get(playerState.id);
       if (!player) {
         const isLocalPlayer = playerState.id === this.localPlayerId;
+        const playerColor = isLocalPlayer ? 0x5bf2bd : playerState.is_bot ? 0xf15d58 : 0xf5c55b;
+        const strokeColor = isLocalPlayer ? 0xd8fff1 : playerState.is_bot ? 0xffc1b7 : 0xffe2a1;
         player = this.add.circle(
           playerState.x,
           playerState.y,
           PLAYER_RADIUS,
-          isLocalPlayer ? 0x5bf2bd : 0xf5c55b,
+          playerColor,
         );
-        player.setStrokeStyle(4, isLocalPlayer ? 0xd8fff1 : 0xffe2a1, 0.85);
+        player.setStrokeStyle(4, strokeColor, 0.85);
         this.players.set(playerState.id, player);
         this.weaponLabels.set(
           playerState.id,
@@ -481,14 +489,16 @@ export class ArenaScene extends Phaser.Scene {
       }
 
       const isLocalPlayer = playerState.id === this.localPlayerId;
+      const playerColor = isLocalPlayer ? 0x5bf2bd : playerState.is_bot ? 0xf15d58 : 0xf5c55b;
+      const strokeColor = isLocalPlayer ? 0xd8fff1 : playerState.is_bot ? 0xffc1b7 : 0xffe2a1;
       const respawnedThisUpdate = this.playerAliveStates.get(playerState.id) === false && playerState.alive;
       if (!playerState.connected) {
         player.setFillStyle(0x4c5566);
         player.setStrokeStyle(4, 0xb9c4d4, 0.5);
         player.setAlpha(0.45);
       } else if (playerState.alive) {
-        player.setFillStyle(isLocalPlayer ? 0x5bf2bd : 0xf5c55b);
-        player.setStrokeStyle(4, isLocalPlayer ? 0xd8fff1 : 0xffe2a1, 0.85);
+        player.setFillStyle(playerColor);
+        player.setStrokeStyle(4, strokeColor, 0.85);
         player.setAlpha(1);
       } else {
         player.setFillStyle(0x667085);
@@ -604,7 +614,7 @@ export class ArenaScene extends Phaser.Scene {
       (left, right) => right.kills - left.kills || right.damage_dealt - left.damage_dealt,
     );
     const lines = rankedPlayers.map((player, index) => {
-      const name = player.id === this.localPlayerId ? "YOU" : `P${player.id.slice(0, 4)}`;
+      const name = player.id === this.localPlayerId ? "YOU" : player.is_bot ? "BOT" : `P${player.id.slice(0, 4)}`;
       return `${index + 1}. ${name}  ${player.kills} K · ${Math.round(player.damage_dealt)} DMG`;
     });
     const text = ["LEADERBOARD", ...lines].join("\n");
@@ -644,7 +654,7 @@ export class ArenaScene extends Phaser.Scene {
       return;
     }
 
-    const owner = playerState.id === this.localPlayerId ? "YOU · " : "";
+    const owner = playerState.id === this.localPlayerId ? "YOU · " : playerState.is_bot ? "BOT · " : "";
     const ammo = playerState.magazine_capacity > 0
       ? ` · ${playerState.ammo_in_mag}/${playerState.magazine_capacity}`
       : "";
