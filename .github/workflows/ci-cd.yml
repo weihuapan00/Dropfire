@@ -83,5 +83,12 @@ jobs:
             sudo chown -R caddy:caddy /var/www/dropfire
             sudo systemctl restart dropfire
             sudo systemctl reload caddy
-            curl --fail --silent --show-error http://127.0.0.1:8000/api/health
+            for attempt in {1..10}; do
+              if curl --fail --silent --show-error http://127.0.0.1:8000/api/health; then
+                exit 0
+              fi
+              sleep 2
+            done
+            sudo systemctl status dropfire --no-pager
+            exit 1
           REMOTE
