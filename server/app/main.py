@@ -82,6 +82,10 @@ from .state import (
 
 
 game_loop_task: asyncio.Task[None] | None = None
+last_tick_ms = 0.0
+max_tick_ms = 0.0
+last_loop_lag_ms = 0.0
+max_loop_lag_ms = 0.0
 
 
 @asynccontextmanager
@@ -215,10 +219,12 @@ async def send_world_state(connection: WebSocket, payload: str) -> None:
 
 async def game_loop() -> None:
     """Advance the shared world and publish one snapshot at a fixed rate."""
+    global last_tick_ms, max_tick_ms, last_loop_lag_ms, max_loop_lag_ms
     previous_tick_at = monotonic()
     while True:
         await asyncio.sleep(TICK_INTERVAL_SECONDS)
         now = monotonic()
+        loop_lag_ms = max(0.0, (now - previous_tick_at - TICK_INTERVAL_SECONDS) * 1000)
         elapsed = min(now - previous_tick_at, MAX_TICK_SECONDS)
         previous_tick_at = now
 
@@ -253,6 +259,10 @@ async def game_loop() -> None:
         mark_stale_empty_rooms(now)
         for code in [code for code, room in rooms.items() if room.get("should_close")]:
             rooms.pop(code, None)
+        last_tick_ms = (monotonic() - now) * 1000
+        max_tick_ms = max(max_tick_ms, last_tick_ms)
+        last_loop_lag_ms = loop_lag_ms
+        max_loop_lag_ms = max(max_loop_lag_ms, loop_lag_ms)
 
 
 @app.get("/api/health")
@@ -263,6 +273,10 @@ async def health_check() -> dict[str, Any]:
         "players": sum(len(room["players"]) for room in rooms.values()),
         "max_rooms": MAX_ROOMS,
         "max_players_per_room": MAX_PLAYERS,
+        "tick_ms": round(last_tick_ms, 2),
+        "max_tick_ms": round(max_tick_ms, 2),
+        "loop_lag_ms": round(last_loop_lag_ms, 2),
+        "max_loop_lag_ms": round(max_loop_lag_ms, 2),
     }
 
 

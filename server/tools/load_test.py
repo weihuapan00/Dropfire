@@ -196,12 +196,26 @@ async def run(args: argparse.Namespace) -> int:
         health_latency = [latency for latency, _ in health_samples]
         peak_rooms = max(health["rooms"] for _, health in health_samples)
         peak_players = max(health["players"] for _, health in health_samples)
+        peak_tick = max(health.get("tick_ms", 0) for _, health in health_samples)
+        peak_max_tick = max(health.get("max_tick_ms", 0) for _, health in health_samples)
+        peak_loop_lag = max(health.get("loop_lag_ms", 0) for _, health in health_samples)
+        peak_max_loop_lag = max(
+            health.get("max_loop_lag_ms", 0) for _, health in health_samples
+        )
         print(
             "health latency ms  min/avg/p95/max: "
             f"{min(health_latency):.1f} / {statistics.mean(health_latency):.1f} / "
             f"{percentile(health_latency, 0.95):.1f} / {max(health_latency):.1f}"
         )
         print(f"server peak: rooms={peak_rooms}, players={peak_players}")
+        print(
+            "server tick ms  peak/max_observed: "
+            f"{peak_tick:.2f} / {peak_max_tick:.2f}"
+        )
+        print(
+            "server loop lag ms  peak/max_observed: "
+            f"{peak_loop_lag:.2f} / {peak_max_loop_lag:.2f}"
+        )
 
     return 0 if not errors else 1
 
