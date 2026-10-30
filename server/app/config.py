@@ -11,7 +11,6 @@ MAX_PLAYERS = 8
 # Keep generous headroom: a single worker should never run at 100% CPU.
 MAX_ROOMS = max(1, int(os.getenv("DROPFIRE_MAX_ROOMS", "12")))
 LOBBY_BROADCAST_INTERVAL_SECONDS = 0.2
-BROADCAST_SEND_TIMEOUT_SECONDS = 1.0
 
 BOT_PREFERRED_RANGES = {"knife": 70.0, "pistol": 330.0, "rifle": 500.0}
 BOT_FIRE_RANGES = {"pistol": 500.0, "rifle": 900.0}

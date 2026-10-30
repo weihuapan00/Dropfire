@@ -15,7 +15,6 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.websockets import WebSocketDisconnected
 
 from .bots import (
     add_fill_bot,
@@ -28,8 +27,8 @@ from .bots import (
     respawn_test_bot,
     spawn_test_bot,
 )
+from .connections import ConnectionSender
 from .config import (
-    BROADCAST_SEND_TIMEOUT_SECONDS,
     COVER_WALLS,
     DEFAULT_WEAPON,
     LOBBY_BROADCAST_INTERVAL_SECONDS,
@@ -86,6 +85,21 @@ last_tick_ms = 0.0
 max_tick_ms = 0.0
 last_loop_lag_ms = 0.0
 max_loop_lag_ms = 0.0
+senders: dict[int, ConnectionSender] = {}
+
+
+def handle_sender_closed(websocket: WebSocket) -> None:
+    """Remove a connection whose outbound sender failed."""
+    senders.pop(id(websocket), None)
+    if websocket in active_connections:
+        active_connections.remove(websocket)
+
+
+def register_sender(websocket: WebSocket) -> ConnectionSender:
+    """Create the per-connection outbound queue and sender task."""
+    sender = ConnectionSender(websocket, handle_sender_closed)
+    senders[id(websocket)] = sender
+    return sender
 
 
 @asynccontextmanager
@@ -147,8 +161,8 @@ async def create_room_endpoint() -> dict[str, str]:
     return {"code": code}
 
 
-async def broadcast_world_state() -> None:
-    """Send the complete current player list to every connected browser."""
+def broadcast_world_state() -> None:
+    """Publish the newest snapshot without waiting for any client's socket."""
     now = monotonic()
     message = {
         "type": "world_state",
@@ -197,24 +211,10 @@ async def broadcast_world_state() -> None:
     hit_events.clear()
     current_room()["last_broadcast_at"] = now
     payload = json.dumps(message, separators=(",", ":"))
-    connections = active_connections.copy()
-    if connections:
-        await asyncio.gather(
-            *(send_world_state(connection, payload) for connection in connections),
-            return_exceptions=True,
-        )
-
-
-async def send_world_state(connection: WebSocket, payload: str) -> None:
-    """Send one pre-serialized snapshot, dropping clients that stop reading."""
-    try:
-        await asyncio.wait_for(
-            connection.send_text(payload),
-            timeout=BROADCAST_SEND_TIMEOUT_SECONDS,
-        )
-    except (asyncio.TimeoutError, WebSocketDisconnect, WebSocketDisconnected):
-        if connection in active_connections:
-            active_connections.remove(connection)
+    for connection in active_connections.copy():
+        sender = senders.get(id(connection))
+        if sender is not None:
+            sender.enqueue(payload)
 
 
 async def game_loop() -> None:
@@ -250,7 +250,7 @@ async def game_loop() -> None:
                         else LOBBY_BROADCAST_INTERVAL_SECONDS
                     )
                     if now - float(room.get("last_broadcast_at", 0.0)) >= broadcast_interval:
-                        await broadcast_world_state()
+                        broadcast_world_state()
                 else:
                     hit_events.clear()
             finally:
@@ -291,6 +291,7 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
 
     token = room_context.set(room)
     player_id: str | None = None
+    sender: ConnectionSender | None = None
     try:
         await websocket.accept()
         session_token = websocket.query_params.get("session")
@@ -360,26 +361,33 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
             rebalance_fill_bots()
 
         active_connections.append(websocket)
+        sender = register_sender(websocket)
 
-        await websocket.send_json(
-            {
-                "type": "server_connected",
-                "player_id": player_id,
-                "session_token": session_token,
-                "server_time": monotonic(),
-            }
+        await sender.send_control(
+            json.dumps(
+                {
+                    "type": "server_connected",
+                    "player_id": player_id,
+                    "session_token": session_token,
+                    "server_time": monotonic(),
+                },
+                separators=(",", ":"),
+            )
         )
         advance_round(monotonic())
-        await broadcast_world_state()
+        broadcast_world_state()
 
         while True:
             message: dict[str, Any] = await websocket.receive_json()
             if message.get("type") == "ping":
-                await websocket.send_json(
-                    {
-                        "type": "pong",
-                        "client_sent_at": message.get("client_sent_at"),
-                    }
+                await sender.send_control(
+                    json.dumps(
+                        {
+                            "type": "pong",
+                            "client_sent_at": message.get("client_sent_at"),
+                        },
+                        separators=(",", ":"),
+                    )
                 )
                 continue
 
@@ -397,7 +405,7 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
 
             if message.get("type") == "switch_weapon":
                 if switch_weapon(players[player_id]):
-                    await broadcast_world_state()
+                    broadcast_world_state()
                 continue
 
             if message.get("type") == "reload_intent":
@@ -410,13 +418,13 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
 
             if message.get("type") == "add_ai_bot":
                 if add_fill_bot(player_id):
-                    await broadcast_world_state()
+                    broadcast_world_state()
                 continue
 
             if message.get("type") == "start_match":
                 if request_match_start(player_id):
                     advance_round(monotonic())
-                    await broadcast_world_state()
+                    broadcast_world_state()
                 continue
 
             if message.get("type") == "next_round":
@@ -425,50 +433,56 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
                     and current_room()["round_state"]["phase"] == "ending"
                 ):
                     start_round(monotonic())
-                    await broadcast_world_state()
+                    broadcast_world_state()
                 continue
 
             if message.get("type") == "spawn_test_bot":
                 if spawn_test_bot(player_id):
                     advance_round(monotonic())
-                    await broadcast_world_state()
+                    broadcast_world_state()
                 continue
 
             if message.get("type") == "debug_respawn_bot":
                 if respawn_test_bot(player_id, message):
-                    await broadcast_world_state()
+                    broadcast_world_state()
                 continue
 
             if message.get("type") == "debug_reset_weapon_pickups":
                 reset_weapon_pickups()
-                await broadcast_world_state()
+                broadcast_world_state()
                 continue
 
             if message.get("type") == "debug_reset_test_round":
                 reset_test_round()
-                await broadcast_world_state()
+                broadcast_world_state()
                 continue
 
             if message.get("type") == "debug_collect_pickup":
                 if move_test_bot_to_pickup(player_id, message):
-                    await broadcast_world_state()
+                    broadcast_world_state()
                 continue
 
             if message.get("type") == "debug_move_bot":
                 if move_test_bot(player_id, message):
-                    await broadcast_world_state()
+                    broadcast_world_state()
                 continue
 
-            await websocket.send_json(
-                {
-                    "type": "message_received",
-                    "original_type": message.get("type", "unknown"),
-                    "server_time": monotonic(),
-                }
+            await sender.send_control(
+                json.dumps(
+                    {
+                        "type": "message_received",
+                        "original_type": message.get("type", "unknown"),
+                        "server_time": monotonic(),
+                    },
+                    separators=(",", ":"),
+                )
             )
     except WebSocketDisconnect:
         pass
     finally:
+        if sender is not None:
+            await sender.close()
+            senders.pop(id(websocket), None)
         if websocket in active_connections:
             active_connections.remove(websocket)
         player = players.get(player_id) if player_id else None
@@ -476,5 +490,5 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
             player["connected"] = False
             player["connection"] = None
             player["disconnect_deadline"] = monotonic() + RECONNECT_GRACE_SECONDS
-            await broadcast_world_state()
+            broadcast_world_state()
         room_context.reset(token)
