@@ -1,0 +1,110 @@
+name: Load test Dropfire (maintenance window only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      rooms:
+        description: "Rooms to create"
+        required: true
+        default: "12"
+      players:
+        description: "Players per room"
+        required: true
+        default: "8"
+      bots:
+        description: "Bots per room"
+        required: true
+        default: "0"
+      pings:
+        description: "Pings per simulated player"
+        required: true
+        default: "30"
+
+permissions:
+  contents: read
+
+jobs:
+  load-test:
+    name: Isolated Oracle load test
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install load-test client
+        run: python -m pip install "websockets>=13,<18"
+
+      - name: Configure the deployment SSH key
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Start isolated server and SSH tunnel
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "$DEPLOY_USER@$DEPLOY_HOST" 'bash -se' <<'REMOTE'
+            set -euo pipefail
+            cd /home/ubuntu/dropfire
+            git pull --ff-only origin main
+            cd server
+            DROPFIRE_MAX_ROOMS=100 nohup .venv/bin/python -m uvicorn app.main:app \
+              --host 127.0.0.1 --port 8001 >/tmp/dropfire-loadtest.log 2>&1 &
+            echo $! >/tmp/dropfire-loadtest.pid
+            for attempt in {1..20}; do
+              if curl --fail --silent http://127.0.0.1:8001/api/health; then
+                exit 0
+              fi
+              sleep 0.5
+            done
+            cat /tmp/dropfire-loadtest.log
+            exit 1
+          REMOTE
+
+          ssh -i ~/.ssh/id_ed25519 -N \
+            -L 8001:127.0.0.1:8001 \
+            -o ExitOnForwardFailure=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" >/tmp/dropfire-tunnel.log 2>&1 &
+          echo $! >/tmp/dropfire-tunnel.pid
+          sleep 2
+
+      - name: Run load test
+        run: |
+          python server/tools/load_test.py \
+            --http-base http://127.0.0.1:8001 \
+            --ws-base ws://127.0.0.1:8001 \
+            --rooms "${{ inputs.rooms }}" \
+            --players "${{ inputs.players }}" \
+            --bots "${{ inputs.bots }}" \
+            --pings "${{ inputs.pings }}" \
+            --force
+
+      - name: Stop isolated server
+        if: always()
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ -f /tmp/dropfire-tunnel.pid ]; then
+            kill "$(cat /tmp/dropfire-tunnel.pid)" || true
+          fi
+          ssh -i ~/.ssh/id_ed25519 "$DEPLOY_USER@$DEPLOY_HOST" 'bash -se' <<'REMOTE'
+            if [ -f /tmp/dropfire-loadtest.pid ]; then
+              kill "$(cat /tmp/dropfire-loadtest.pid)" || true
+              rm -f /tmp/dropfire-loadtest.pid
+            fi
+          REMOTE

@@ -5,7 +5,7 @@ must run inside a room context (set by the game loop or a WebSocket handler).
 """
 
 from math import atan2, cos, hypot, isfinite, sin
-from random import shuffle
+from random import choices, shuffle, uniform
 from time import monotonic
 from typing import Any
 from uuid import uuid4
@@ -18,15 +18,23 @@ from .config import (
     BULLET_RADIUS,
     COVER_WALLS,
     DEFAULT_WEAPON,
+    HEALTH_PICKUP_AMOUNT,
     KNIFE_BLOCK_MINIMUM_DOT_PRODUCT,
     KNIFE_BLOCK_REACH,
     KNIFE_SPEED_MULTIPLIER,
     MAGAZINE_CAPACITIES,
     MATCH_DURATION_SECONDS,
+    MAX_HEALTH_PICKUPS,
+    MAX_KNIFE_PICKUPS,
+    MAX_RIFLE_PICKUPS,
+    MAX_WEAPON_PICKUPS,
     MELEE_WEAPON_SETTINGS,
     MIN_PLAYERS_TO_START_ROUND,
     MIN_SPAWN_DISTANCE_FROM_ENEMY,
     PICKUP_RADIUS,
+    PICKUP_SPAWN_INTERVAL_SECONDS,
+    PICKUP_SPAWN_MIN_PICKUP_DISTANCE,
+    PICKUP_SPAWN_MIN_PLAYER_DISTANCE,
     PLAYER_MAX_HP,
     PLAYER_RADIUS,
     PLAYER_SPEED,
@@ -39,8 +47,10 @@ from .config import (
 )
 from .state import (
     bullets,
+    create_initial_health_pickups,
     create_initial_weapon_pickups,
     current_room,
+    health_pickups,
     hit_events,
     players,
     round_state,
@@ -433,6 +443,29 @@ def collect_weapon_pickup(player: dict[str, Any]) -> bool:
     return False
 
 
+def collect_health_pickup(player: dict[str, Any]) -> bool:
+    """Consume a nearby medkit when hurt, capped at max HP."""
+    if not player["alive"] or not player["connected"] or not round_is_active():
+        return False
+    if player["hp"] >= PLAYER_MAX_HP:
+        return False
+
+    for pickup in health_pickups.copy():
+        distance_to_pickup = hypot(player["x"] - pickup["x"], player["y"] - pickup["y"])
+        if distance_to_pickup <= PLAYER_RADIUS + PICKUP_RADIUS:
+            player["hp"] = min(PLAYER_MAX_HP, player["hp"] + int(pickup.get("amount", 0)))
+            health_pickups.remove(pickup)
+            return True
+    return False
+
+
+def collect_pickup(player: dict[str, Any]) -> bool:
+    """Pick up a medkit when hurt, otherwise a nearby weapon."""
+    if collect_health_pickup(player):
+        return True
+    return collect_weapon_pickup(player)
+
+
 def switch_weapon(player: dict[str, Any]) -> bool:
     """Toggle the active weapon between the ranged and melee slots."""
     if not player["alive"] or not player["connected"]:
@@ -456,10 +489,102 @@ def reset_weapon_pickups() -> None:
     weapon_pickups.extend(create_initial_weapon_pickups())
 
 
+def reset_health_pickups() -> None:
+    """Restore every medkit for a fresh round."""
+    health_pickups.clear()
+    health_pickups.extend(create_initial_health_pickups())
+
+
+PICKUP_SPAWN_TYPES = ("health", "pistol", "knife", "rifle")
+PICKUP_SPAWN_WEIGHTS = (0.4, 0.35, 0.15, 0.1)
+
+
+def choose_pickup_spawn_kind() -> str | None:
+    """Pick a random spawn type that is still under its map cap."""
+    for _ in range(8):
+        kind = choices(PICKUP_SPAWN_TYPES, weights=PICKUP_SPAWN_WEIGHTS, k=1)[0]
+        if kind == "health":
+            if len(health_pickups) < MAX_HEALTH_PICKUPS:
+                return kind
+            continue
+        if len(weapon_pickups) >= MAX_WEAPON_PICKUPS:
+            continue
+        if kind == "rifle" and sum(1 for pickup in weapon_pickups if pickup["weapon"] == "rifle") >= MAX_RIFLE_PICKUPS:
+            continue
+        if kind == "knife" and sum(1 for pickup in weapon_pickups if pickup["weapon"] == "knife") >= MAX_KNIFE_PICKUPS:
+            continue
+        return kind
+    return None
+
+
+def find_pickup_spawn_position() -> tuple[float, float] | None:
+    """Find a random valid point away from cover, players, and other pickups."""
+    for _ in range(40):
+        x = uniform(ARENA_MIN_X + PICKUP_RADIUS, ARENA_MAX_X - PICKUP_RADIUS)
+        y = uniform(ARENA_MIN_Y + PICKUP_RADIUS, ARENA_MAX_Y - PICKUP_RADIUS)
+        if position_hits_cover(x, y, PICKUP_RADIUS):
+            continue
+        if any(
+            hypot(x - player["x"], y - player["y"]) < PICKUP_SPAWN_MIN_PLAYER_DISTANCE
+            for player in players.values()
+        ):
+            continue
+        if any(
+            hypot(x - pickup["x"], y - pickup["y"]) < PICKUP_SPAWN_MIN_PICKUP_DISTANCE
+            for pickup in list(weapon_pickups) + list(health_pickups)
+        ):
+            continue
+        return x, y
+    return None
+
+
+def spawn_random_pickup() -> bool:
+    """Drop one random weapon or medkit at a valid position."""
+    kind = choose_pickup_spawn_kind()
+    if kind is None:
+        return False
+    position = find_pickup_spawn_position()
+    if position is None:
+        return False
+    x, y = position
+    if kind == "health":
+        health_pickups.append(
+            {
+                "id": f"health-drop-{uuid4().hex[:6]}",
+                "x": x,
+                "y": y,
+                "amount": HEALTH_PICKUP_AMOUNT,
+            }
+        )
+    else:
+        weapon_pickups.append(
+            {
+                "id": f"{kind}-drop-{uuid4().hex[:6]}",
+                "weapon": kind,
+                "x": x,
+                "y": y,
+            }
+        )
+    return True
+
+
+def advance_pickup_spawner(now: float) -> bool:
+    """Drop a new pickup every interval while a round is active."""
+    if not round_is_active():
+        return False
+    room = current_room()
+    next_spawn_at = room.get("next_pickup_spawn_at", 0.0)
+    if now < next_spawn_at:
+        return False
+    room["next_pickup_spawn_at"] = now + PICKUP_SPAWN_INTERVAL_SECONDS
+    return spawn_random_pickup()
+
+
 def reset_round_world() -> None:
     """Restore the battlefield for a fresh three-minute scoring period."""
     bullets.clear()
     reset_weapon_pickups()
+    reset_health_pickups()
     for player_number, player in enumerate(players.values()):
         respawn_player(player, player_number)
         player["damage_dealt"] = 0.0
@@ -531,6 +656,7 @@ def start_round(now: float) -> None:
     round_state["number"] += 1
     round_state["winner_id"] = None
     round_state["ends_at"] = now + MATCH_DURATION_SECONDS
+    current_room()["next_pickup_spawn_at"] = now + PICKUP_SPAWN_INTERVAL_SECONDS
     for player in players.values():
         if player["is_bot"] and player["owner_id"] is None:
             player["engage_after"] = now + 3.0

@@ -2,6 +2,7 @@
 
 from time import monotonic
 
+from app import state
 from app.bots import remove_expired_disconnections
 from app.state import mark_stale_empty_rooms
 
@@ -62,3 +63,14 @@ def test_occupied_room_is_not_marked_for_close(room):
     mark_stale_empty_rooms(monotonic())
 
     assert room["should_close"] is False
+
+
+def test_create_room_respects_capacity(room, monkeypatch):
+    monkeypatch.setattr(state, "MAX_ROOMS", len(state.rooms) + 1)
+
+    extra_code = state.create_room()
+    assert extra_code is not None
+    try:
+        assert state.create_room() is None
+    finally:
+        state.rooms.pop(extra_code, None)

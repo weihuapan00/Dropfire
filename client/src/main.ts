@@ -477,6 +477,14 @@ async function refreshRooms(): Promise<void> {
 
 createRoomButton?.addEventListener("click", async () => {
   const response = await fetch(apiUrl("/api/rooms"), { method: "POST" });
+  if (!response.ok) {
+    if (lobbyMessage) {
+      lobbyMessage.textContent = response.status === 503
+        ? "Server is at room capacity — try again in a minute."
+        : "Could not create a room — try again.";
+    }
+    return;
+  }
   const room = await response.json() as { code: string };
   enterRoom(room.code);
 });

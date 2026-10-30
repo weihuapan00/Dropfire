@@ -1,23 +1,27 @@
 """Unit tests for the server-authoritative combat and round rules."""
 
+import random
 from math import cos, radians, sin
 from time import monotonic
 
 import pytest
 
+from app.config import MAX_HEALTH_PICKUPS, MAX_KNIFE_PICKUPS, MAX_RIFLE_PICKUPS, MAX_WEAPON_PICKUPS
 from app.rules import (
     advance_bullets,
+    advance_pickup_spawner,
     advance_player_movement,
     advance_round,
     apply_damage,
     apply_move_intent,
     attack_with_melee,
+    collect_pickup,
     collect_weapon_pickup,
     fire_weapon,
     request_match_start,
     switch_weapon,
 )
-from app.state import bullets, hit_events, weapon_pickups
+from app.state import bullets, health_pickups, hit_events, weapon_pickups
 
 
 def make_player(player_id: str, **overrides):
@@ -404,3 +408,76 @@ def test_knife_block_cone_accepts_wide_front_angle(room):
 
     assert len(bullets) == 0
     assert any(event["blocked"] for event in hit_events)
+
+
+def test_collect_medkit_heals_and_removes_pickup(room):
+    activate_round(room)
+    player = make_player("p1", x=900.0, y=720.0, hp=50)
+    room["players"]["p1"] = player
+
+    collected = collect_pickup(player)
+
+    assert collected is True
+    assert player["hp"] == 85
+    assert "health-1" not in {pickup["id"] for pickup in health_pickups}
+
+
+def test_medkit_healing_caps_at_max_hp(room):
+    activate_round(room)
+    player = make_player("p1", x=900.0, y=720.0, hp=90)
+    room["players"]["p1"] = player
+
+    assert collect_pickup(player) is True
+    assert player["hp"] == 100
+
+
+def test_medkit_stays_when_player_is_full_hp(room):
+    activate_round(room)
+    player = make_player("p1", x=900.0, y=720.0, hp=100)
+    room["players"]["p1"] = player
+
+    assert collect_pickup(player) is False
+    assert "health-1" in {pickup["id"] for pickup in health_pickups}
+
+
+def test_collect_pickup_falls_back_to_weapon(room):
+    activate_round(room)
+    player = make_player("p1", x=600.0, y=410.0, hp=100)
+    room["players"]["p1"] = player
+
+    assert collect_pickup(player) is True
+    assert player["weapon"] == "pistol"
+
+
+def test_pickup_spawner_adds_a_pickup_when_due(room):
+    random.seed(7)
+    activate_round(room)
+    room["next_pickup_spawn_at"] = monotonic() - 1.0
+    before = len(weapon_pickups) + len(health_pickups)
+
+    spawned = advance_pickup_spawner(monotonic())
+
+    assert spawned is True
+    assert len(weapon_pickups) + len(health_pickups) == before + 1
+
+
+def test_pickup_spawner_waits_for_interval(room):
+    activate_round(room)
+    room["next_pickup_spawn_at"] = monotonic() + 100.0
+    before = len(weapon_pickups) + len(health_pickups)
+
+    assert advance_pickup_spawner(monotonic()) is False
+    assert len(weapon_pickups) + len(health_pickups) == before
+
+
+def test_pickup_spawner_respects_caps(room):
+    random.seed(3)
+    activate_round(room)
+    for _ in range(60):
+        room["next_pickup_spawn_at"] = monotonic() - 1.0
+        advance_pickup_spawner(monotonic())
+
+    assert len(weapon_pickups) <= MAX_WEAPON_PICKUPS
+    assert len(health_pickups) <= MAX_HEALTH_PICKUPS
+    assert sum(pickup["weapon"] == "rifle" for pickup in weapon_pickups) <= MAX_RIFLE_PICKUPS
+    assert sum(pickup["weapon"] == "knife" for pickup in weapon_pickups) <= MAX_KNIFE_PICKUPS

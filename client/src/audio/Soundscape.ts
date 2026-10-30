@@ -118,6 +118,24 @@ export class Soundscape {
     }
   }
 
+  playHeal(): void {
+    const context = this.getContext();
+    if (!context || context.state !== "running") return;
+
+    const now = context.currentTime;
+    for (const [offset, frequency] of [[0, 523.25], [0.07, 783.99]] as const) {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(frequency, now + offset);
+      gain.gain.setValueAtTime(0.03, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.16);
+      oscillator.connect(gain).connect(context.destination);
+      oscillator.start(now + offset);
+      oscillator.stop(now + offset + 0.16);
+    }
+  }
+
   private getContext(): AudioContext | null {
     if (this.context) return this.context;
     const AudioContextConstructor = window.AudioContext

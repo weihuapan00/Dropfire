@@ -14,7 +14,14 @@ from uuid import uuid4
 
 from fastapi import WebSocket
 
-from .config import EMPTY_ROOM_TTL_SECONDS, INITIAL_WEAPON_PICKUPS, ROOM_CODE_ALPHABET
+from .config import (
+    EMPTY_ROOM_TTL_SECONDS,
+    HEALTH_PICKUP_AMOUNT,
+    INITIAL_HEALTH_PICKUPS,
+    INITIAL_WEAPON_PICKUPS,
+    MAX_ROOMS,
+    ROOM_CODE_ALPHABET,
+)
 
 
 rooms: dict[str, dict[str, Any]] = {}
@@ -89,6 +96,7 @@ active_connections: MutableSequence[WebSocket] = RoomList("active_connections")
 players: MutableMapping[str, dict[str, Any]] = RoomMapping("players")
 bullets: MutableSequence[dict[str, Any]] = RoomList("bullets")
 weapon_pickups: MutableSequence[dict[str, Any]] = RoomList("weapon_pickups")
+health_pickups: MutableSequence[dict[str, Any]] = RoomList("health_pickups")
 round_state: MutableMapping[str, Any] = RoomMapping("round_state")
 hit_events: MutableSequence[dict[str, Any]] = RoomList("hit_events")
 
@@ -101,8 +109,18 @@ def create_initial_weapon_pickups() -> list[dict[str, Any]]:
     ]
 
 
-def create_room() -> str:
-    """Create an empty room with fully isolated authoritative game state."""
+def create_initial_health_pickups() -> list[dict[str, Any]]:
+    """Create fresh medkits so a round reset cannot mutate the blueprint."""
+    return [
+        {"id": pickup_id, "x": x, "y": y, "amount": HEALTH_PICKUP_AMOUNT}
+        for pickup_id, x, y in INITIAL_HEALTH_PICKUPS
+    ]
+
+
+def create_room() -> str | None:
+    """Create an empty room, or return None when the server is at capacity."""
+    if len(rooms) >= MAX_ROOMS:
+        return None
     while True:
         code = "".join(ROOM_CODE_ALPHABET[uuid4().int % len(ROOM_CODE_ALPHABET)] for _ in range(6))
         if code not in rooms:
@@ -111,11 +129,14 @@ def create_room() -> str:
         "code": code,
         "should_close": False,
         "created_at": monotonic(),
+        "last_broadcast_at": 0.0,
         "active_connections": [],
         "players": {},
         "bullets": [],
         "weapon_pickups": create_initial_weapon_pickups(),
+        "health_pickups": create_initial_health_pickups(),
         "hit_events": [],
+        "next_pickup_spawn_at": 0.0,
         "host_player_id": None,
         "round_state": {
             "phase": "waiting",

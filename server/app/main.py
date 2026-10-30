@@ -7,12 +7,13 @@ WebSocket endpoint.
 """
 
 import asyncio
+import json
 from contextlib import asynccontextmanager, suppress
 from time import monotonic
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketDisconnected
 
@@ -28,9 +29,12 @@ from .bots import (
     spawn_test_bot,
 )
 from .config import (
+    BROADCAST_SEND_TIMEOUT_SECONDS,
     COVER_WALLS,
     DEFAULT_WEAPON,
+    LOBBY_BROADCAST_INTERVAL_SECONDS,
     MAX_PLAYERS,
+    MAX_ROOMS,
     MAX_TICK_SECONDS,
     PLAYER_MAX_HP,
     RECONNECT_GRACE_SECONDS,
@@ -40,13 +44,14 @@ from .config import (
 from .rules import (
     advance_bullets,
     advance_melee_attacks,
+    advance_pickup_spawner,
     advance_player_movement,
     advance_reloads,
     advance_respawns,
     advance_round,
     apply_move_intent,
     attack_with_melee,
-    collect_weapon_pickup,
+    collect_pickup,
     fire_weapon,
     get_melee_progress,
     get_reload_progress,
@@ -65,11 +70,13 @@ from .state import (
     bullets,
     create_room,
     current_room,
+    health_pickups,
     hit_events,
     mark_stale_empty_rooms,
     players,
     room_context,
     rooms,
+    round_state,
     weapon_pickups,
 )
 
@@ -130,7 +137,10 @@ async def list_rooms() -> list[dict[str, Any]]:
 @app.post("/api/rooms")
 async def create_room_endpoint() -> dict[str, str]:
     """Create a room and return its six-character invite code."""
-    return {"code": create_room()}
+    code = create_room()
+    if code is None:
+        raise HTTPException(status_code=503, detail="Server is at room capacity")
+    return {"code": code}
 
 
 async def broadcast_world_state() -> None:
@@ -168,6 +178,7 @@ async def broadcast_world_state() -> None:
         ],
         "covers": COVER_WALLS,
         "pickups": list(weapon_pickups),
+        "health_pickups": list(health_pickups),
         "bullets": [
             {
                 "id": bullet["id"],
@@ -180,12 +191,26 @@ async def broadcast_world_state() -> None:
         "hits": list(hit_events),
     }
     hit_events.clear()
-    for connection in active_connections.copy():
-        try:
-            await connection.send_json(message)
-        except (WebSocketDisconnect, WebSocketDisconnected):
-            if connection in active_connections:
-                active_connections.remove(connection)
+    current_room()["last_broadcast_at"] = now
+    payload = json.dumps(message, separators=(",", ":"))
+    connections = active_connections.copy()
+    if connections:
+        await asyncio.gather(
+            *(send_world_state(connection, payload) for connection in connections),
+            return_exceptions=True,
+        )
+
+
+async def send_world_state(connection: WebSocket, payload: str) -> None:
+    """Send one pre-serialized snapshot, dropping clients that stop reading."""
+    try:
+        await asyncio.wait_for(
+            connection.send_text(payload),
+            timeout=BROADCAST_SEND_TIMEOUT_SECONDS,
+        )
+    except (asyncio.TimeoutError, WebSocketDisconnect, WebSocketDisconnected):
+        if connection in active_connections:
+            active_connections.remove(connection)
 
 
 async def game_loop() -> None:
@@ -202,16 +227,24 @@ async def game_loop() -> None:
             try:
                 advance_round(now)
                 remove_expired_disconnections(now)
-                advance_respawns(now)
-                advance_reloads(now)
-                advance_melee_attacks(now)
-                advance_fill_bot_ai(now)
-                for player in players.values():
-                    advance_player_movement(player, elapsed)
-                advance_bullets(elapsed)
+                if round_state["phase"] == "active":
+                    advance_pickup_spawner(now)
+                    advance_respawns(now)
+                    advance_reloads(now)
+                    advance_melee_attacks(now)
+                    advance_fill_bot_ai(now)
+                    for player in players.values():
+                        advance_player_movement(player, elapsed)
+                    advance_bullets(elapsed)
 
                 if active_connections:
-                    await broadcast_world_state()
+                    broadcast_interval = (
+                        TICK_INTERVAL_SECONDS
+                        if round_state["phase"] == "active"
+                        else LOBBY_BROADCAST_INTERVAL_SECONDS
+                    )
+                    if now - float(room.get("last_broadcast_at", 0.0)) >= broadcast_interval:
+                        await broadcast_world_state()
                 else:
                     hit_events.clear()
             finally:
@@ -223,8 +256,14 @@ async def game_loop() -> None:
 
 
 @app.get("/api/health")
-async def health_check() -> dict[str, str]:
-    return {"status": "ok"}
+async def health_check() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "rooms": len(rooms),
+        "players": sum(len(room["players"]) for room in rooms.values()),
+        "max_rooms": MAX_ROOMS,
+        "max_players_per_room": MAX_PLAYERS,
+    }
 
 
 @app.websocket("/ws/{room_code}")
@@ -352,7 +391,7 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
                 continue
 
             if message.get("type") == "pickup_intent":
-                collect_weapon_pickup(players[player_id])
+                collect_pickup(players[player_id])
                 continue
 
             if message.get("type") == "add_ai_bot":

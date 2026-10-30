@@ -103,6 +103,13 @@ interface PickupState {
   weapon: WeaponType;
 }
 
+interface HealthPickupState {
+  id: string;
+  x: number;
+  y: number;
+  amount: number;
+}
+
 interface BulletState {
   id: string;
   x: number;
@@ -185,6 +192,20 @@ function isPickupState(value: unknown): value is PickupState {
   );
 }
 
+function isHealthPickupState(value: unknown): value is HealthPickupState {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const pickup = value as Record<string, unknown>;
+  return (
+    typeof pickup.id === "string"
+    && typeof pickup.x === "number"
+    && typeof pickup.y === "number"
+    && typeof pickup.amount === "number"
+  );
+}
+
 function isBulletState(value: unknown): value is BulletState {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -260,6 +281,7 @@ export class ArenaScene extends Phaser.Scene {
   private readonly meleeAngles = new Map<string, number>();
   private readonly covers = new Map<string, Phaser.GameObjects.Graphics>();
   private readonly pickups = new Map<string, Phaser.GameObjects.Container>();
+  private readonly healthPickups = new Map<string, Phaser.GameObjects.Container>();
   private readonly bullets = new Map<string, Phaser.GameObjects.Arc>();
   private readonly bulletRenderTargets = new Map<string, Phaser.Math.Vector2>();
   private readonly coverRects: Array<{ x: number; y: number; width: number; height: number }> = [];
@@ -269,6 +291,8 @@ export class ArenaScene extends Phaser.Scene {
   private localWeapon: WeaponType = "fists";
   private localGunWeapon: WeaponType | null = null;
   private localAmmoInMag = 0;
+  private lastLocalHp = 100;
+  private lastRoundNumber = 0;
   private localPlayerIsAlive = true;
   private localPlayerIsReloading = false;
   private roundPhase: RoundState["phase"] = "waiting";
@@ -305,6 +329,8 @@ export class ArenaScene extends Phaser.Scene {
   private gunSlotHud!: Phaser.GameObjects.Text;
   private statusHud!: Phaser.GameObjects.Text;
   private switchHintHud!: Phaser.GameObjects.Text;
+  private lastMeleeSlotStyle = "";
+  private lastGunSlotStyle = "";
   private roundHud!: Phaser.GameObjects.Text;
   private scoreboardHud!: Phaser.GameObjects.Text;
   private spectatorHud!: Phaser.GameObjects.Text;
@@ -332,6 +358,7 @@ export class ArenaScene extends Phaser.Scene {
     this.load.svg("weapon-knife", "/sprites/knife.svg", { width: 128, height: 128 });
     this.load.svg("weapon-pistol", "/sprites/pistol.svg", { width: 128, height: 128 });
     this.load.svg("weapon-rifle", "/sprites/rifle.svg", { width: 128, height: 128 });
+    this.load.svg("pickup-health", "/sprites/health.svg", { width: 128, height: 128 });
   }
 
   create(): void {
@@ -460,6 +487,7 @@ export class ArenaScene extends Phaser.Scene {
         Array.isArray(message.players) &&
         Array.isArray(message.covers) &&
         Array.isArray(message.pickups) &&
+        Array.isArray(message.health_pickups) &&
         Array.isArray(message.bullets) &&
         Array.isArray(message.hits)
       ) {
@@ -470,6 +498,7 @@ export class ArenaScene extends Phaser.Scene {
           this.hasSyncedCovers = true;
         }
         this.syncPickups(message.pickups.filter(isPickupState));
+        this.syncHealthPickups(message.health_pickups.filter(isHealthPickupState));
         this.syncBullets(message.bullets.filter(isBulletState));
         this.syncHits(message.hits.filter(isHitEvent));
       }
@@ -688,11 +717,18 @@ export class ArenaScene extends Phaser.Scene {
       this.playerAliveStates.set(playerState.id, playerState.alive);
       this.syncHeldWeapon(playerState);
       if (playerState.id === this.localPlayerId) {
+        const wasAlive = this.localPlayerIsAlive;
+        const previousHp = this.lastLocalHp;
         this.localPlayer = player;
         this.localWeapon = playerState.weapon;
         this.localGunWeapon = playerState.gun_weapon;
         this.localAmmoInMag = playerState.ammo_in_mag;
         this.localPlayerIsAlive = playerState.alive;
+        this.lastLocalHp = playerState.hp;
+        if (wasAlive && previousHp > 0 && playerState.hp > previousHp) {
+          this.showHealFeedback(player.x, player.y, playerState.hp - previousHp);
+          soundscape.playHeal();
+        }
         if (localStorage.getItem("dropfire-weapon-tip-seen") !== "1") {
           localStorage.setItem("dropfire-weapon-tip-seen", "1");
           this.showWeaponTip();
@@ -757,6 +793,10 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private syncRound(round: RoundState): void {
+    if (round.number !== this.lastRoundNumber) {
+      this.lastRoundNumber = round.number;
+      this.lastLocalHp = 100;
+    }
     this.roundPhase = round.phase;
     if (round.phase === "waiting") {
       this.setRoundHudText("WAITING FOR 2 PLAYERS");
@@ -870,17 +910,25 @@ export class ArenaScene extends Phaser.Scene {
         ? `  ${playerState.ammo_in_mag}/${playerState.magazine_capacity}`
         : "";
       this.meleeSlotHud.setText(`MELEE  ${WEAPON_LABELS[playerState.melee_weapon]}`);
-      this.meleeSlotHud.setBackgroundColor(meleeActive ? "#173d33" : "#111a27");
-      this.meleeSlotHud.setColor(meleeActive ? "#8cffd2" : "#7d8a9c");
+      const meleeStyle = meleeActive ? "active" : "inactive";
+      if (meleeStyle !== this.lastMeleeSlotStyle) {
+        this.lastMeleeSlotStyle = meleeStyle;
+        this.meleeSlotHud.setBackgroundColor(meleeActive ? "#173d33" : "#111a27");
+        this.meleeSlotHud.setColor(meleeActive ? "#8cffd2" : "#7d8a9c");
+      }
       this.gunSlotHud.setText(
         playerState.gun_weapon
           ? `GUN    ${WEAPON_LABELS[playerState.gun_weapon]}${gunAmmo}`
           : "GUN    EMPTY",
       );
-      this.gunSlotHud.setBackgroundColor(gunActive ? "#173d33" : "#111a27");
-      this.gunSlotHud.setColor(
-        gunActive ? "#8cffd2" : playerState.gun_weapon ? "#aab8c9" : "#5c6778",
-      );
+      const gunStyle = gunActive ? "active" : playerState.gun_weapon ? "available" : "empty";
+      if (gunStyle !== this.lastGunSlotStyle) {
+        this.lastGunSlotStyle = gunStyle;
+        this.gunSlotHud.setBackgroundColor(gunActive ? "#173d33" : "#111a27");
+        this.gunSlotHud.setColor(
+          gunActive ? "#8cffd2" : playerState.gun_weapon ? "#aab8c9" : "#5c6778",
+        );
+      }
       const hpHudValue = playerState.alive
         ? shieldStatus || `${playerState.hp}`
         : `RESPAWN ${Math.ceil(playerState.respawn_ends_in_seconds)}s`;
@@ -1162,6 +1210,15 @@ export class ArenaScene extends Phaser.Scene {
           })
           .setOrigin(0.5);
         pickup = this.add.container(pickupState.x, pickupState.y, [glow, pickupRange, marker, label]);
+        pickup.setScale(0.5).setAlpha(0);
+        this.tweens.add({
+          targets: pickup,
+          scaleX: 1,
+          scaleY: 1,
+          alpha: 1,
+          duration: 320,
+          ease: "Back.Out",
+        });
         this.pickups.set(pickupState.id, pickup);
       }
 
@@ -1172,6 +1229,50 @@ export class ArenaScene extends Phaser.Scene {
       if (!currentPickupIds.has(pickupId)) {
         pickup.destroy();
         this.pickups.delete(pickupId);
+      }
+    }
+  }
+
+  private syncHealthPickups(serverPickups: HealthPickupState[]): void {
+    const currentPickupIds = new Set(serverPickups.map((pickup) => pickup.id));
+
+    for (const pickupState of serverPickups) {
+      let pickup = this.healthPickups.get(pickupState.id);
+      if (!pickup) {
+        const glow = this.add.circle(0, 0, 52, 0x5bf2bd, 0.1);
+        const pickupRange = this.add.circle(0, 0, PICKUP_HINT_RADIUS);
+        pickupRange.setStrokeStyle(2, 0x5bf2bd, 0.38);
+        const marker = this.add.image(0, 0, "pickup-health").setScale(PICKUP_WEAPON_SCALE);
+        const label = this.add
+          .text(0, 40, `+${Math.round(pickupState.amount)} HP`, {
+            backgroundColor: "#111a27",
+            color: "#8cffd2",
+            fontFamily: "system-ui, sans-serif",
+            fontSize: "16px",
+            fontStyle: "bold",
+            padding: { x: 4, y: 2 },
+          })
+          .setOrigin(0.5);
+        pickup = this.add.container(pickupState.x, pickupState.y, [glow, pickupRange, marker, label]);
+        pickup.setScale(0.5).setAlpha(0);
+        this.tweens.add({
+          targets: pickup,
+          scaleX: 1,
+          scaleY: 1,
+          alpha: 1,
+          duration: 320,
+          ease: "Back.Out",
+        });
+        this.healthPickups.set(pickupState.id, pickup);
+      }
+
+      pickup.setPosition(pickupState.x, pickupState.y);
+    }
+
+    for (const [pickupId, pickup] of this.healthPickups) {
+      if (!currentPickupIds.has(pickupId)) {
+        pickup.destroy();
+        this.healthPickups.delete(pickupId);
       }
     }
   }
@@ -1395,6 +1496,37 @@ export class ArenaScene extends Phaser.Scene {
       targets: flash,
       alpha: 0,
       duration: 220,
+      onComplete: () => flash.destroy(),
+    });
+  }
+
+  private showHealFeedback(x: number, y: number, amount: number): void {
+    const label = this.add.text(x, y - 42, `+${Math.round(amount)} HP`, {
+      fontFamily: "system-ui, sans-serif",
+      fontSize: "18px",
+      fontStyle: "bold",
+      color: "#8cffd2",
+    }).setOrigin(0.5).setDepth(32);
+    this.tweens.add({
+      targets: label,
+      y: y - 92,
+      alpha: 0,
+      duration: 750,
+      onComplete: () => label.destroy(),
+    });
+
+    const flash = this.add.rectangle(
+      0,
+      0,
+      this.cameras.main.width,
+      this.cameras.main.height,
+      0x5bf2bd,
+      0.16,
+    ).setOrigin(0).setScrollFactor(0).setDepth(240);
+    this.tweens.add({
+      targets: flash,
+      alpha: 0,
+      duration: 260,
       onComplete: () => flash.destroy(),
     });
   }

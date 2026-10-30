@@ -4,10 +4,17 @@ Everything here is pure data with no dependency on room state, so it can be
 imported by the room-state, rules, and bot modules without creating cycles.
 """
 
+import os
+
+
 MAX_PLAYERS = 8
+# Keep generous headroom: a single worker should never run at 100% CPU.
+MAX_ROOMS = max(1, int(os.getenv("DROPFIRE_MAX_ROOMS", "12")))
+LOBBY_BROADCAST_INTERVAL_SECONDS = 0.2
+BROADCAST_SEND_TIMEOUT_SECONDS = 1.0
 
 BOT_PREFERRED_RANGES = {"knife": 70.0, "pistol": 330.0, "rifle": 500.0}
-BOT_FIRE_RANGES = {"pistol": 500.0, "rifle": 1100.0}
+BOT_FIRE_RANGES = {"pistol": 500.0, "rifle": 900.0}
 
 WEAPON_TYPES = {"fists", "knife", "pistol", "rifle"}
 RANGED_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
@@ -18,13 +25,13 @@ RANGED_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
         "cooldown_seconds": 0.35,
     },
     "rifle": {
-        "damage": 15.0,
-        "bullet_speed": 1080.0,
-        "bullet_lifetime_seconds": 1.75,
-        "cooldown_seconds": 0.12,
+        "damage": 13.0,
+        "bullet_speed": 1000.0,
+        "bullet_lifetime_seconds": 1.5,
+        "cooldown_seconds": 0.16,
     },
 }
-MAGAZINE_CAPACITIES = {"pistol": 12, "rifle": 30}
+MAGAZINE_CAPACITIES = {"pistol": 12, "rifle": 20}
 RELOAD_DURATION_SECONDS = 1.2
 
 MELEE_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
@@ -80,6 +87,22 @@ SPAWN_POINTS = (
     (1440.0, 1190.0),
     (2200.0, 1180.0),
 )
+
+HEALTH_PICKUP_AMOUNT = 35
+INITIAL_HEALTH_PICKUPS = (
+    ("health-1", 900.0, 720.0),
+    ("health-2", 1660.0, 720.0),
+    ("health-3", 1280.0, 300.0),
+    ("health-4", 1280.0, 1140.0),
+)
+
+PICKUP_SPAWN_INTERVAL_SECONDS = 8.0
+MAX_WEAPON_PICKUPS = 14
+MAX_HEALTH_PICKUPS = 7
+MAX_RIFLE_PICKUPS = 3
+MAX_KNIFE_PICKUPS = 6
+PICKUP_SPAWN_MIN_PLAYER_DISTANCE = 140.0
+PICKUP_SPAWN_MIN_PICKUP_DISTANCE = 90.0
 
 PLAYER_SPEED = 280.0
 KNIFE_SPEED_MULTIPLIER = 1.15
