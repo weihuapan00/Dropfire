@@ -1,6 +1,6 @@
 :root {
-  color: #f4f7fb;
-  background: #080b11;
+  color: #edf4ff;
+  background: #070b13;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
@@ -24,9 +24,9 @@ body,
 body {
   min-height: 100vh;
   background:
-    radial-gradient(circle at 20% 0%, rgba(69, 216, 164, 0.12), transparent 30rem),
-    radial-gradient(circle at 100% 20%, rgba(249, 93, 86, 0.12), transparent 28rem),
-    #080b11;
+    radial-gradient(circle at 16% 0%, rgba(67, 220, 185, 0.14), transparent 31rem),
+    radial-gradient(circle at 92% 14%, rgba(255, 104, 88, 0.16), transparent 30rem),
+    linear-gradient(135deg, #070b13 0%, #0b1220 55%, #090d15 100%);
 }
 
 .shell {
@@ -115,10 +115,10 @@ body {
   position: relative;
   overflow: hidden;
   min-width: 0;
-  border: 1px solid #273142;
-  border-radius: 18px;
-  background: #0a0f17;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(113, 148, 185, 0.32);
+  border-radius: 20px;
+  background: #0a1019;
+  box-shadow: 0 32px 90px rgba(0, 0, 0, 0.45), inset 0 1px rgba(255, 255, 255, 0.05);
 }
 
 .mobile-fullscreen {
@@ -163,10 +163,10 @@ body {
 }
 
 .panel {
-  border: 1px solid #273142;
-  border-radius: 18px;
+  border: 1px solid rgba(113, 148, 185, 0.28);
+  border-radius: 20px;
   padding: 20px;
-  background: rgba(14, 19, 28, 0.84);
+  background: linear-gradient(145deg, rgba(22, 31, 47, 0.92), rgba(10, 16, 27, 0.88));
 }
 
 .panel h2 {
@@ -193,11 +193,11 @@ body {
   display: grid;
   height: 40px;
   place-items: center;
-  border: 1px solid #3a465a;
+  border: 1px solid #3d4d65;
   border-bottom-width: 3px;
   border-radius: 8px;
   color: #dfe7f2;
-  background: #171e2a;
+  background: #151e2c;
   font-weight: 700;
 }
 
@@ -247,11 +247,64 @@ body {
 
 .test-button {
   cursor: pointer;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
 }
 
 .test-button:hover {
   border-color: #69f4c1;
+  background: #1b2939;
+  transform: translateY(-1px);
 }
+
+.test-button:focus-visible,
+.test-select:focus-visible {
+  outline: 2px solid #75f4c6;
+  outline-offset: 2px;
+}
+
+.lobby {
+  width: min(620px, calc(100% - 32px));
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: clamp(58px, 12vh, 120px) 0 56px;
+}
+
+.lobby::after {
+  content: "";
+  position: fixed;
+  z-index: -1;
+  right: -12vw;
+  bottom: -24vw;
+  width: 54vw;
+  aspect-ratio: 1;
+  border: 1px solid rgba(117, 244, 198, 0.09);
+  border-radius: 50%;
+  box-shadow: 0 0 0 50px rgba(117, 244, 198, 0.025), 0 0 0 100px rgba(117, 244, 198, 0.018);
+}
+
+.lobby-brand { display: flex; align-items: center; gap: 10px; color: #f3f7ff; font-weight: 900; letter-spacing: .12em; font-size: .9rem; }
+.lobby-brand .brand-mark { width: 34px; height: 34px; border-radius: 10px; font-size: .68rem; }
+.lobby-brand span span { color: #69f4c1; }
+.eyebrow { margin: 72px 0 14px; color: #69f4c1; font-size: .7rem; font-weight: 800; letter-spacing: .16em; }
+.lobby h1 { margin: 0; color: #f5f8ff; font-size: clamp(2.6rem, 8vw, 4.7rem); line-height: .93; letter-spacing: -.065em; }
+.lobby h1 em { color: #ff806d; font-style: normal; }
+.lobby-intro { max-width: 470px; margin: 24px 0 30px; color: #a5b2c5; font-size: 1rem; line-height: 1.65; }
+.lobby-actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
+.primary-action { display: flex; align-items: center; justify-content: space-between; border-color: #69f4c1; padding: 14px 16px; color: #072018; background: #69f4c1; font-size: .94rem; }
+.primary-action span { font-size: 1.25rem; line-height: .7; }
+.primary-action:hover { border-color: #b2ffdc; background: #8cffd2; box-shadow: 0 8px 26px rgba(91, 242, 189, .18); }
+.join-code { display: grid; grid-template-columns: 1fr 112px; gap: 10px; }
+.join-code .test-select { width: 100%; margin: 0; padding: 13px 15px; letter-spacing: .16em; font-weight: 800; }
+.join-code .test-button { margin: 0; padding: 13px 15px; }
+#lobby-message { min-height: 1.4em; color: #ffad9f; font-size: .82rem; }
+.room-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 54px; border-bottom: 1px solid rgba(147, 169, 198, .2); padding-bottom: 12px; }
+.room-heading h2 { margin: 0; font-size: .85rem; letter-spacing: .08em; text-transform: uppercase; }
+.room-heading span { color: #69f4c1; font-size: .65rem; font-weight: 800; letter-spacing: .14em; }
+#room-list .test-button { text-align: left; }
+.player-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7rem !important; letter-spacing: .035em; }
+#copy-room-code { margin-left: 4px; border: 0; padding: 0; color: #69f4c1; background: transparent; font: inherit; cursor: pointer; }
 
 .pickup-actions {
   display: grid;

@@ -220,6 +220,10 @@ export class ArenaScene extends Phaser.Scene {
   private roundHud!: Phaser.GameObjects.Text;
   private scoreboardHud!: Phaser.GameObjects.Text;
   private spectatorHud!: Phaser.GameObjects.Text;
+  private performanceHud!: Phaser.GameObjects.Text;
+  private pingMs: number | null = null;
+  private nextPingAt = 0;
+  private nextPerformanceHudUpdateAt = 0;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private movementKeys!: Record<"up" | "down" | "left" | "right", Phaser.Input.Keyboard.Key>;
   private reloadKey!: Phaser.Input.Keyboard.Key;
@@ -282,10 +286,25 @@ export class ArenaScene extends Phaser.Scene {
       .setOrigin(0.5, 0)
       .setScrollFactor(0)
       .setDepth(100);
+    this.performanceHud = this.add
+      .text(1262, 102, "FPS: --\nPING: --", {
+        backgroundColor: "#111a27",
+        color: "#b8c7d9",
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        fontSize: "13px",
+        padding: { x: 7, y: 5 },
+      })
+      .setOrigin(1, 0)
+      .setScrollFactor(0)
+      .setDepth(100);
 
     this.gameSocket.onMessage((message) => {
       if (message.type === "server_connected" && typeof message.player_id === "string") {
         this.localPlayerId = message.player_id;
+      }
+
+      if (message.type === "pong" && typeof message.client_sent_at === "number") {
+        this.pingMs = Math.round(performance.now() - message.client_sent_at);
       }
 
       if (
@@ -365,6 +384,7 @@ export class ArenaScene extends Phaser.Scene {
   update(time: number, delta: number): void {
     this.interpolatePlayers(delta);
     this.interpolateBullets(delta);
+    this.updatePerformanceHud(time);
 
     if (!this.localPlayerIsAlive && Phaser.Input.Keyboard.JustDown(this.spectateKey)) {
       this.followNextSpectator();
@@ -857,9 +877,15 @@ export class ArenaScene extends Phaser.Scene {
 
   private drawArena(): void {
     const graphics = this.add.graphics();
-    graphics.fillStyle(0x0d141e, 1);
+    graphics.fillStyle(0x08111c, 1);
     graphics.fillRoundedRect(48, 48, WORLD_WIDTH - 96, WORLD_HEIGHT - 96, 22);
-    graphics.lineStyle(1, 0x233044, 0.8);
+    graphics.fillStyle(0x0c1928, 0.52);
+    for (let x = 120; x < WORLD_WIDTH - 96; x += 240) {
+      for (let y = 120; y < WORLD_HEIGHT - 96; y += 240) {
+        graphics.fillCircle(x, y, 92);
+      }
+    }
+    graphics.lineStyle(1, 0x29415a, 0.62);
 
     for (let x = 80; x <= WORLD_WIDTH - 80; x += 40) {
       graphics.lineBetween(x, 64, x, WORLD_HEIGHT - 64);
@@ -869,8 +895,10 @@ export class ArenaScene extends Phaser.Scene {
       graphics.lineBetween(64, y, WORLD_WIDTH - 64, y);
     }
 
-    graphics.lineStyle(3, 0x34445b, 1);
+    graphics.lineStyle(3, 0x4b6d88, 0.95);
     graphics.strokeRoundedRect(48, 48, WORLD_WIDTH - 96, WORLD_HEIGHT - 96, 22);
+    graphics.lineStyle(1, 0x69f4c1, 0.3);
+    graphics.strokeRoundedRect(58, 58, WORLD_WIDTH - 116, WORLD_HEIGHT - 116, 16);
   }
 
   private drawAimLine(): void {
@@ -893,6 +921,21 @@ export class ArenaScene extends Phaser.Scene {
     this.aimLine.clear();
     this.aimLine.lineStyle(5, 0xf5c55b, 1);
     this.aimLine.lineBetween(player.x, player.y, endX, endY);
+  }
+
+  private updatePerformanceHud(time: number): void {
+    if (time >= this.nextPingAt) {
+      this.gameSocket.send({ type: "ping", client_sent_at: performance.now() });
+      this.nextPingAt = time + 1000;
+    }
+
+    if (time < this.nextPerformanceHudUpdateAt) {
+      return;
+    }
+    this.nextPerformanceHudUpdateAt = time + 250;
+    const fps = Math.round(this.game.loop.actualFps);
+    const ping = this.pingMs === null ? "--" : `${this.pingMs} ms`;
+    this.performanceHud.setText(`FPS: ${fps}\nPING: ${ping}`);
   }
 
   private fireTowardPointer(pointer: Phaser.Input.Pointer): void {

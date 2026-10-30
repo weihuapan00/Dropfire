@@ -1023,6 +1023,15 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
 
         while True:
             message: dict[str, Any] = await websocket.receive_json()
+            if message.get("type") == "ping":
+                await websocket.send_json(
+                    {
+                        "type": "pong",
+                        "client_sent_at": message.get("client_sent_at"),
+                    }
+                )
+                continue
+
             if message.get("type") == "move_intent":
                 apply_move_intent(players[player_id], message)
                 continue

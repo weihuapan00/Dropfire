@@ -11,15 +11,16 @@ if (!app) {
 
 app.innerHTML = `
   <section class="lobby" id="lobby">
-    <h1>Dropfire rooms</h1>
-    <p>Create a room, or enter a six-character invite code.</p>
+    <div class="lobby-brand"><span class="brand-mark">DF</span><span>DROP<span>FIRE</span></span></div>
+    <p class="eyebrow">REAL-TIME MULTIPLAYER ARENA</p>
+    <h1>Drop in.<br /><em>Own the arena.</em></h1>
+    <p class="lobby-intro">Create a private match for your squad, or enter a six-character invite code to join the fight.</p>
     <div class="lobby-actions">
-      <button class="test-button" id="create-room" type="button">Create room</button>
-      <input class="test-select" id="room-code-input" maxlength="6" placeholder="ABC123" autocomplete="off" />
-      <button class="test-button" id="join-room" type="button">Join by code</button>
+      <button class="test-button primary-action" id="create-room" type="button">Create a room <span>→</span></button>
+      <div class="join-code"><input class="test-select" id="room-code-input" maxlength="6" placeholder="ENTER CODE" autocomplete="off" /><button class="test-button" id="join-room" type="button">Join</button></div>
     </div>
     <p id="lobby-message"></p>
-    <h2>Available rooms</h2>
+    <div class="room-heading"><h2>Open rooms</h2><span>LIVE</span></div>
     <div id="room-list"></div>
   </section>
   <main class="shell" id="game-shell" hidden>
