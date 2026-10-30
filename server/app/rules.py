@@ -86,7 +86,7 @@ def apply_move_intent(player: dict[str, Any], message: dict[str, Any]) -> bool:
 
 def advance_player_movement(player: dict[str, Any], elapsed: float) -> bool:
     """Move one player for one server tick using its last valid input direction."""
-    if not player["alive"] or (player["move_x"] == 0 and player["move_y"] == 0):
+    if not player["alive"] or not player["connected"] or (player["move_x"] == 0 and player["move_y"] == 0):
         return False
 
     speed = PLAYER_SPEED * (KNIFE_SPEED_MULTIPLIER if player["weapon"] == "knife" else 1.0)

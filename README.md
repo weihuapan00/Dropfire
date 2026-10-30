@@ -1,6 +1,6 @@
 # Dropfire
 
-A browser-based, real-time 2D arena shooter for 2–8 players. Create a private
+A browser-based, real-time 2D arena shooter for 2–8 players. Create a
 room, share its six-character code, add AI opponents if needed, then compete
 for the most kills before the three-minute match ends.
 
@@ -14,9 +14,11 @@ server automatically.
 
 ## Gameplay
 
-- Create or join a private room with a six-character invite code.
+- Create or join a room with a six-character code. Rooms are publicly listed
+  in the lobby; the code is a shortcut for joining, not an access restriction.
 - The host can add AI bots and start once at least two players are present.
-- Every player starts with a knife. Find pistols or rifles around the arena.
+- Every player starts with fists. Find knives, pistols, rifles, and medkits
+  around the arena. Carry one melee weapon and one gun, and switch between them.
 - A match lasts three minutes; kills rank first, then total damage breaks ties.
 - The server owns movement, combat, pickups, respawns, round state, and bot
   behaviour, so every connected player sees the same shared world.
@@ -25,8 +27,8 @@ server automatically.
 
 | Platform | Controls |
 | --- | --- |
-| Desktop | `WASD` / arrow keys to move; mouse to aim and fire; `E` to pick up; `R` to reload |
-| Mobile | Left stick to move; right side to aim and fire; on-screen **PICK** and **RELOAD** buttons |
+| Desktop | `WASD` / arrow keys to move; mouse to aim and fire; `E` to pick up; `R` to reload; `G` to switch weapon |
+| Mobile | Left stick to move; right stick to aim and fire; on-screen **SWITCH**, **PICK**, and **RELOAD** buttons |
 
 ## Architecture
 
@@ -86,11 +88,15 @@ network.
 ## Verify changes
 
 ```bash
-cd client && npm run typecheck && npm run build
+cd client && npm test && npm run typecheck && npm run build
 cd ../server && python -m pip install -r requirements-dev.txt && pytest -q
 ```
 
 ## Deployment
+
+Development-only WebSocket commands are disabled by default. For local debugging,
+start the server with `DROPFIRE_ENABLE_DEBUG_COMMANDS=1`; even then, only the room
+host can run them. Leave this unset on the public server.
 
 The workflow in [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 runs client type checks/builds and server tests for pull requests. A successful

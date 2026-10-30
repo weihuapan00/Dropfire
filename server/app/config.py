@@ -8,6 +8,8 @@ import os
 
 
 MAX_PLAYERS = 8
+# Opt in only on a local development server; hosts still need authorization.
+ENABLE_DEBUG_COMMANDS = os.getenv("DROPFIRE_ENABLE_DEBUG_COMMANDS", "0") == "1"
 # Keep generous headroom: a single worker should never run at 100% CPU.
 MAX_ROOMS = max(1, int(os.getenv("DROPFIRE_MAX_ROOMS", "12")))
 LOBBY_BROADCAST_INTERVAL_SECONDS = 0.2

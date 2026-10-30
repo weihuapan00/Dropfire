@@ -15,6 +15,7 @@ export class GameSocket {
   private sessionToken = this.getSessionToken();
   private readonly listeners = new Set<ConnectionListener>();
   private readonly messageListeners = new Set<MessageListener>();
+  private arenaConfig: ServerMessage | null = null;
 
   constructor(
     private readonly roomCode: string,
@@ -38,6 +39,9 @@ export class GameSocket {
 
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data) as ServerMessage;
+      if (message.type === "arena_config") {
+        this.arenaConfig = message;
+      }
       if (message.type === "server_connected" && typeof message.session_token === "string") {
         this.sessionToken = message.session_token;
         sessionStorage.setItem("dropfire-tab-session-token", this.sessionToken);
@@ -82,6 +86,11 @@ export class GameSocket {
 
   onMessage(listener: MessageListener): () => void {
     this.messageListeners.add(listener);
+    // The arena scene is created after the lobby receives this one-time message.
+    // Replay configuration to late subscribers, but never replay gameplay events.
+    if (this.arenaConfig !== null) {
+      listener(this.arenaConfig);
+    }
     return () => this.messageListeners.delete(listener);
   }
 

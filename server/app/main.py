@@ -31,6 +31,7 @@ from .connections import ConnectionSender
 from .config import (
     COVER_WALLS,
     DEFAULT_WEAPON,
+    ENABLE_DEBUG_COMMANDS,
     LOBBY_BROADCAST_INTERVAL_SECONDS,
     MAX_PLAYERS,
     MAX_ROOMS,
@@ -325,6 +326,8 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
             existing_player["connected"] = True
             existing_player["connection"] = websocket
             existing_player["disconnect_deadline"] = None
+            existing_player["move_x"] = 0.0
+            existing_player["move_y"] = 0.0
             if requested_name:
                 existing_player["name"] = requested_name
         else:
@@ -403,7 +406,19 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
         broadcast_world_state()
 
         while True:
-            message: dict[str, Any] = await websocket.receive_json()
+            try:
+                message = await websocket.receive_json()
+            except json.JSONDecodeError:
+                await sender.send_control(json.dumps({"type": "invalid_message"}))
+                continue
+            if not isinstance(message, dict) or not isinstance(message.get("type"), str):
+                await sender.send_control(json.dumps({"type": "invalid_message"}))
+                continue
+            message_type = message["type"]
+            if message_type.startswith("debug_") or message_type == "spawn_test_bot":
+                if not ENABLE_DEBUG_COMMANDS or current_room()["host_player_id"] != player_id:
+                    await sender.send_control(json.dumps({"type": "command_denied"}))
+                    continue
             if message.get("type") == "ping":
                 await sender.send_control(
                     json.dumps(
@@ -515,6 +530,8 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
         if player and player["connection"] is websocket:
             player["connected"] = False
             player["connection"] = None
+            player["move_x"] = 0.0
+            player["move_y"] = 0.0
             player["disconnect_deadline"] = monotonic() + RECONNECT_GRACE_SECONDS
             broadcast_world_state()
         room_context.reset(token)

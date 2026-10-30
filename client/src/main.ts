@@ -17,7 +17,7 @@ app.innerHTML = `
     <div class="lobby-brand"><span class="brand-mark">DF</span><span>DROP<span>FIRE</span></span></div>
     <p class="eyebrow">REAL-TIME MULTIPLAYER ARENA</p>
     <h1>Drop in.<br /><em>Own the arena.</em></h1>
-    <p class="lobby-intro">Create a private match for your squad, or enter a six-character invite code to join the fight.</p>
+    <p class="lobby-intro">Create a room for your squad, browse open rooms, or enter a six-character room code to join the fight. Rooms are visible to everyone.</p>
     <div class="lobby-actions">
       <input class="test-select name-input" id="player-name-input" maxlength="16" placeholder="YOUR NAME (optional)" autocomplete="off" />
       <button class="test-button primary-action" id="create-room" type="button">Create a room <span>→</span></button>
@@ -30,7 +30,7 @@ app.innerHTML = `
   <section class="room-lobby" id="room-lobby" hidden>
     <div class="lobby-brand"><span class="brand-mark">DF</span><span>DROP<span>FIRE</span></span></div>
     <button class="audio-toggle leave-button" id="leave-waiting-room" type="button">← Leave room</button>
-    <p class="eyebrow">PRIVATE MATCH</p>
+    <p class="eyebrow">OPEN MATCH</p>
     <h1>Room <em id="waiting-room-code">------</em></h1>
     <p class="lobby-intro">Wait for real players, add up to three AI opponents, then start when you are ready.</p>
     <div class="room-heading"><h2>Players</h2><span id="waiting-player-count">0 / 8</span></div>
@@ -53,7 +53,7 @@ app.innerHTML = `
         <div class="brand-mark">DF</div>
         <div>
           <h1>Dropfire</h1>
-          <p>Multiplayer arena prototype - Milestone 1</p>
+          <p>3 minutes. Most kills wins.</p>
           <p class="player-id" id="player-id">You: waiting for player ID</p>
           <p class="player-id">Room: <span id="room-code"></span> <button id="copy-room-code" type="button">Copy room code</button></p>
         </div>
@@ -85,8 +85,8 @@ app.innerHTML = `
         </div>
 
         <div class="lesson">
-          <h2>Shared loot</h2>
-          <p>The server removes a collected pickup and broadcasts the updated world to every player.</p>
+          <h2>Fight for the lead</h2>
+          <p>Most kills wins; damage breaks ties. Press G to switch between your melee weapon and gun. Pick up a medkit when hurt, and use cover to avoid enemy fire.</p>
         </div>
       </aside>
     </section>
