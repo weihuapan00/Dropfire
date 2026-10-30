@@ -13,7 +13,11 @@ const RELOAD_RING_RADIUS = 31;
 const MOBILE_JOYSTICK_X = 126;
 const MOBILE_JOYSTICK_Y = 592;
 const MOBILE_JOYSTICK_RADIUS = 70;
-const MOBILE_ACTION_Y = 628;
+const MOBILE_AIM_JOYSTICK_X = 1154;
+const MOBILE_AIM_JOYSTICK_Y = 592;
+const MOBILE_PICKUP_X = 1004;
+const MOBILE_RELOAD_X = 1174;
+const MOBILE_ACTION_Y = 462;
 const WEAPON_TYPES = ["fists", "knife", "pistol", "rifle"] as const;
 
 type WeaponType = (typeof WEAPON_TYPES)[number];
@@ -213,8 +217,10 @@ export class ArenaScene extends Phaser.Scene {
   private lastSentMoveDirection = new Phaser.Math.Vector2();
   private readonly pointerWorldPosition = new Phaser.Math.Vector2();
   private readonly touchMoveDirection = new Phaser.Math.Vector2();
+  private readonly touchAimDirection = new Phaser.Math.Vector2();
   private touchMovePointerId: number | null = null;
   private touchAimPointer: Phaser.Input.Pointer | null = null;
+  private touchAimHasFired = false;
   private isTouchControlScheme = false;
   private mobileControls!: Phaser.GameObjects.Graphics;
   private aimLine!: Phaser.GameObjects.Graphics;
@@ -354,13 +360,13 @@ export class ArenaScene extends Phaser.Scene {
 
     if (this.isTouchControlScheme) {
       this.mobileControls = this.add.graphics().setScrollFactor(0).setDepth(110);
-      this.add.text(985, MOBILE_ACTION_Y, "PICK", {
+      this.add.text(MOBILE_PICKUP_X, MOBILE_ACTION_Y, "PICK", {
         color: "#f4f7fb",
         fontFamily: "system-ui, sans-serif",
         fontSize: "15px",
         fontStyle: "bold",
       }).setOrigin(0.5).setScrollFactor(0).setDepth(111);
-      this.add.text(1135, MOBILE_ACTION_Y, "RELOAD", {
+      this.add.text(MOBILE_RELOAD_X, MOBILE_ACTION_Y, "RELOAD", {
         color: "#f4f7fb",
         fontFamily: "system-ui, sans-serif",
         fontSize: "13px",
@@ -374,7 +380,7 @@ export class ArenaScene extends Phaser.Scene {
         640,
         680,
         this.isTouchControlScheme
-          ? "Left stick: move  •  Right side: aim & fire  •  PICK UP / RELOAD buttons"
+          ? "Left stick: move  •  Right stick: aim & fire  •  PICK / RELOAD above it"
           : "Move: WASD / arrows  •  E: pick up  •  R: reload  •  P: spectate next  •  Knife: click  •  Pistol: click  •  Rifle: hold left click",
         {
         color: "#96a3b6",
@@ -415,7 +421,7 @@ export class ArenaScene extends Phaser.Scene {
       FIRE_MODES[this.localWeapon] === "automatic" &&
       time >= this.nextAutomaticFireAt
     ) {
-      this.fireTowardPointer(this.input.activePointer);
+      this.fireTowardCurrentAim();
       this.nextAutomaticFireAt = time + AUTOMATIC_FIRE_INTENT_INTERVAL_MS;
     }
 
@@ -917,14 +923,18 @@ export class ArenaScene extends Phaser.Scene {
       return;
     }
 
-    const pointer = this.touchAimPointer ?? this.input.activePointer;
-    pointer.positionToCamera(this.cameras.main, this.pointerWorldPosition);
-    const angle = Phaser.Math.Angle.Between(
-      player.x,
-      player.y,
-      this.pointerWorldPosition.x,
-      this.pointerWorldPosition.y,
-    );
+    const angle = this.touchAimPointer && this.touchAimDirection.lengthSq() > 0
+      ? Math.atan2(this.touchAimDirection.y, this.touchAimDirection.x)
+      : (() => {
+          const pointer = this.input.activePointer;
+          pointer.positionToCamera(this.cameras.main, this.pointerWorldPosition);
+          return Phaser.Math.Angle.Between(
+            player.x,
+            player.y,
+            this.pointerWorldPosition.x,
+            this.pointerWorldPosition.y,
+          );
+        })();
     const endX = player.x + Math.cos(angle) * 54;
     const endY = player.y + Math.sin(angle) * 54;
 
@@ -950,18 +960,30 @@ export class ArenaScene extends Phaser.Scene {
 
   private fireTowardPointer(pointer: Phaser.Input.Pointer): void {
     const player = this.localPlayer;
+    if (!player) return;
+    pointer.positionToCamera(this.cameras.main, this.pointerWorldPosition);
+    const directionX = this.pointerWorldPosition.x - player.x;
+    const directionY = this.pointerWorldPosition.y - player.y;
+    this.fireTowardDirection(directionX, directionY);
+  }
+
+  private fireTowardCurrentAim(): void {
+    if (this.touchAimPointer) {
+      this.fireTowardDirection(this.touchAimDirection.x, this.touchAimDirection.y);
+      return;
+    }
+    this.fireTowardPointer(this.input.activePointer);
+  }
+
+  private fireTowardDirection(directionX: number, directionY: number): void {
     if (
-      !player ||
+      !this.localPlayer ||
       !this.localPlayerIsAlive ||
       this.localPlayerIsReloading ||
       this.roundPhase !== "active"
     ) {
       return;
     }
-
-    pointer.positionToCamera(this.cameras.main, this.pointerWorldPosition);
-    const directionX = this.pointerWorldPosition.x - player.x;
-    const directionY = this.pointerWorldPosition.y - player.y;
     if (directionX === 0 && directionY === 0) {
       return;
     }
@@ -988,8 +1010,9 @@ export class ArenaScene extends Phaser.Scene {
       return;
     }
 
-    if (this.isMobileAction(pointer)) {
-      if (pointer.x < 1080) {
+    const mobileAction = this.getMobileAction(pointer);
+    if (mobileAction) {
+      if (mobileAction === "pickup") {
         this.gameSocket.send({ type: "pickup_intent" });
       } else {
         this.gameSocket.send({ type: "reload_intent" });
@@ -1005,13 +1028,19 @@ export class ArenaScene extends Phaser.Scene {
 
     if (this.touchAimPointer === null) {
       this.touchAimPointer = pointer;
-      this.startFiringAt(pointer);
+      this.touchAimHasFired = false;
+      this.updateTouchAimDirection(pointer);
+      this.fireTouchAimIfReady();
     }
   }
 
   private handlePointerMove(pointer: Phaser.Input.Pointer): void {
     if (pointer.id === this.touchMovePointerId) {
       this.updateTouchMoveDirection(pointer);
+    }
+    if (pointer.id === this.touchAimPointer?.id) {
+      this.updateTouchAimDirection(pointer);
+      this.fireTouchAimIfReady();
     }
   }
 
@@ -1022,6 +1051,8 @@ export class ArenaScene extends Phaser.Scene {
     }
     if (pointer.id === this.touchAimPointer?.id) {
       this.touchAimPointer = null;
+      this.touchAimDirection.set(0, 0);
+      this.touchAimHasFired = false;
       this.automaticFireIsHeld = false;
     }
     if (!this.isTouchPointer(pointer)) {
@@ -1031,6 +1062,18 @@ export class ArenaScene extends Phaser.Scene {
 
   private startFiringAt(pointer: Phaser.Input.Pointer): void {
     this.fireTowardPointer(pointer);
+    if (FIRE_MODES[this.localWeapon] === "automatic") {
+      this.automaticFireIsHeld = true;
+      this.nextAutomaticFireAt = this.time.now + AUTOMATIC_FIRE_INTENT_INTERVAL_MS;
+    }
+  }
+
+  private fireTouchAimIfReady(): void {
+    if (this.touchAimHasFired || this.touchAimDirection.lengthSq() === 0) {
+      return;
+    }
+    this.touchAimHasFired = true;
+    this.fireTowardDirection(this.touchAimDirection.x, this.touchAimDirection.y);
     if (FIRE_MODES[this.localWeapon] === "automatic") {
       this.automaticFireIsHeld = true;
       this.nextAutomaticFireAt = this.time.now + AUTOMATIC_FIRE_INTENT_INTERVAL_MS;
@@ -1048,8 +1091,23 @@ export class ArenaScene extends Phaser.Scene {
     this.drawMobileControls();
   }
 
-  private isMobileAction(pointer: Phaser.Input.Pointer): boolean {
-    return pointer.y > 574 && pointer.x > 900;
+  private updateTouchAimDirection(pointer: Phaser.Input.Pointer): void {
+    this.touchAimDirection.set(pointer.x - MOBILE_AIM_JOYSTICK_X, pointer.y - MOBILE_AIM_JOYSTICK_Y);
+    if (this.touchAimDirection.lengthSq() > MOBILE_JOYSTICK_RADIUS * MOBILE_JOYSTICK_RADIUS) {
+      this.touchAimDirection.setLength(MOBILE_JOYSTICK_RADIUS);
+    }
+    if (this.touchAimDirection.lengthSq() > 0) {
+      this.touchAimDirection.normalize();
+    }
+    this.drawMobileControls();
+  }
+
+  private getMobileAction(pointer: Phaser.Input.Pointer): "pickup" | "reload" | null {
+    const withinButton = (x: number) =>
+      Phaser.Math.Distance.Between(pointer.x, pointer.y, x, MOBILE_ACTION_Y) <= 52;
+    if (withinButton(MOBILE_PICKUP_X)) return "pickup";
+    if (withinButton(MOBILE_RELOAD_X)) return "reload";
+    return null;
   }
 
   private isTouchPointer(pointer: Phaser.Input.Pointer): boolean {
@@ -1069,7 +1127,18 @@ export class ArenaScene extends Phaser.Scene {
       25,
     );
 
-    for (const x of [985, 1135]) {
+    this.mobileControls.fillStyle(0x111a27, 0.62);
+    this.mobileControls.fillCircle(MOBILE_AIM_JOYSTICK_X, MOBILE_AIM_JOYSTICK_Y, MOBILE_JOYSTICK_RADIUS);
+    this.mobileControls.lineStyle(3, 0xf15d58, 0.8);
+    this.mobileControls.strokeCircle(MOBILE_AIM_JOYSTICK_X, MOBILE_AIM_JOYSTICK_Y, MOBILE_JOYSTICK_RADIUS);
+    this.mobileControls.fillStyle(0xf15d58, 0.78);
+    this.mobileControls.fillCircle(
+      MOBILE_AIM_JOYSTICK_X + this.touchAimDirection.x * 38,
+      MOBILE_AIM_JOYSTICK_Y + this.touchAimDirection.y * 38,
+      25,
+    );
+
+    for (const x of [MOBILE_PICKUP_X, MOBILE_RELOAD_X]) {
       this.mobileControls.fillStyle(0x111a27, 0.78);
       this.mobileControls.fillCircle(x, MOBILE_ACTION_Y, 51);
       this.mobileControls.lineStyle(3, 0xf5c55b, 0.85);

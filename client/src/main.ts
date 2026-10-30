@@ -3,6 +3,8 @@ import "./style.css";
 import { createGame } from "./game/createGame";
 import { ConnectionState, GameSocket } from "./network/GameSocket";
 
+const MAX_ROOM_PLAYERS = 8;
+
 const app = document.querySelector<HTMLDivElement>("#app");
 
 if (!app) {
@@ -28,11 +30,17 @@ app.innerHTML = `
     <p class="eyebrow">PRIVATE MATCH</p>
     <h1>Room <em id="waiting-room-code">------</em></h1>
     <p class="lobby-intro">Wait for real players, add up to three AI opponents, then start when you are ready.</p>
-    <div class="room-heading"><h2>Players</h2><span id="waiting-player-count">0 / 4</span></div>
+    <div class="room-heading"><h2>Players</h2><span id="waiting-player-count">0 / 8</span></div>
     <ul class="waiting-player-list" id="waiting-player-list"></ul>
     <button class="test-button primary-action" id="add-ai-bot" type="button">Add AI bot <span>+</span></button>
     <button class="test-button start-match" id="start-match" type="button" disabled>Start match <span>→</span></button>
     <p id="waiting-message" class="waiting-message">Connecting to room…</p>
+    <section class="lobby-rules">
+      <h2>How to play</h2>
+      <p><strong>Desktop:</strong> WASD / arrows move · mouse aims and fires · E picks up · R reloads.</p>
+      <p><strong>Mobile:</strong> left stick moves · right side aims and fires · use PICK and RELOAD buttons.</p>
+      <p>Matches last 3 minutes. Ranking uses kills, then total damage. Fists are always available; weapons must be found.</p>
+    </section>
   </section>
   <main class="shell" id="game-shell" hidden>
     <header class="topbar">
@@ -103,6 +111,7 @@ interface WaitingPlayerState {
   id: string;
   is_bot: boolean;
   connected: boolean;
+  is_host: boolean;
 }
 
 interface WaitingRoundState {
@@ -113,6 +122,7 @@ let localPlayerId: string | null = null;
 let currentRoomCode: string | null = null;
 let gameSocket: GameSocket | null = null;
 let arenaStarted = false;
+const LAST_ROOM_STORAGE_KEY = "dropfire-last-room-code";
 
 function usesMobileBattlefield(): boolean {
   return (
@@ -144,7 +154,8 @@ function isWaitingPlayerState(value: unknown): value is WaitingPlayerState {
   return (
     typeof player.id === "string" &&
     typeof player.is_bot === "boolean" &&
-    typeof player.connected === "boolean"
+    typeof player.connected === "boolean" &&
+    typeof player.is_host === "boolean"
   );
 }
 
@@ -160,22 +171,26 @@ function renderWaitingRoom(players: WaitingPlayerState[], round: WaitingRoundSta
   if (!waitingPlayerList || !waitingPlayerCount) {
     return;
   }
-  waitingPlayerCount.textContent = `${players.length} / 4`;
+  waitingPlayerCount.textContent = `${players.length} / ${MAX_ROOM_PLAYERS}`;
   waitingPlayerList.innerHTML = "";
   for (const player of players) {
     const item = document.createElement("li");
     const identity = player.is_bot ? "AI BOT" : `HUMAN P-${player.id.slice(0, 6)}`;
     const self = player.id === localPlayerId ? " · YOU" : "";
+    const host = player.is_host ? " · HOST" : "";
     const connection = player.connected ? "READY" : "RECONNECTING";
-    item.textContent = `${identity}${self} · ${connection}`;
+    item.textContent = `${identity}${self}${host} · ${connection}`;
     item.dataset.kind = player.is_bot ? "bot" : "human";
     waitingPlayerList.append(item);
   }
+  const localPlayerIsHost = players.some(
+    (player) => player.id === localPlayerId && player.is_host,
+  );
   if (addAiBotButton) {
-    addAiBotButton.disabled = players.length >= 4 || round.phase !== "waiting";
+    addAiBotButton.disabled = !localPlayerIsHost || players.length >= MAX_ROOM_PLAYERS || round.phase !== "waiting";
   }
   if (startMatchButton) {
-    startMatchButton.disabled = players.length < 2 || round.phase !== "waiting";
+    startMatchButton.disabled = !localPlayerIsHost || players.length < 2 || round.phase !== "waiting";
   }
 }
 
@@ -224,6 +239,8 @@ function launchArena(): void {
 function enterRoom(roomCode: string): void {
   currentRoomCode = roomCode;
   arenaStarted = false;
+  sessionStorage.setItem(LAST_ROOM_STORAGE_KEY, roomCode);
+  window.history.replaceState(null, "", `?room=${encodeURIComponent(roomCode)}`);
   roomCodeElement && (roomCodeElement.textContent = roomCode);
   waitingRoomCode && (waitingRoomCode.textContent = roomCode);
   waitingMessage && (waitingMessage.textContent = "Connecting to room…");
@@ -302,4 +319,17 @@ window.setInterval(() => {
     void refreshRooms();
   }
 }, 2000);
+
+function getSavedRoomCode(): string | null {
+  const fromUrl = new URLSearchParams(window.location.search).get("room");
+  const candidate = fromUrl ?? sessionStorage.getItem(LAST_ROOM_STORAGE_KEY);
+  return candidate && /^[A-Z2-9]{6}$/.test(candidate.toUpperCase())
+    ? candidate.toUpperCase()
+    : null;
+}
+
+const savedRoomCode = getSavedRoomCode();
+if (savedRoomCode) {
+  enterRoom(savedRoomCode);
+}
 

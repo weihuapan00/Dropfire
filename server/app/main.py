@@ -115,7 +115,7 @@ players: MutableMapping[str, dict[str, Any]] = RoomMapping("players")
 bullets: MutableSequence[dict[str, Any]] = RoomList("bullets")
 weapon_pickups: MutableSequence[dict[str, Any]]
 round_state: MutableMapping[str, Any] = RoomMapping("round_state")
-MAX_PLAYERS = 4
+MAX_PLAYERS = 8
 BOT_PREFERRED_RANGES = {"knife": 70.0, "pistol": 330.0, "rifle": 500.0}
 BOT_FIRE_RANGES = {"pistol": 500.0, "rifle": 1100.0}
 WEAPON_TYPES = {"fists", "knife", "pistol", "rifle"}
@@ -195,6 +195,7 @@ def create_room() -> str:
         "players": {},
         "bullets": [],
         "weapon_pickups": create_initial_weapon_pickups(),
+        "host_player_id": None,
         "round_state": {
             "phase": "waiting",
             "number": 0,
@@ -253,6 +254,7 @@ async def broadcast_world_state() -> None:
                 "spawn_protection_ends_in_seconds": get_spawn_protection_ends_in_seconds(player, now),
                 "is_bot": player["is_bot"],
                 "owner_id": player["owner_id"],
+                "is_host": player_id == current_room()["host_player_id"],
             }
             for player_id, player in players.items()
         ],
@@ -798,18 +800,8 @@ def respawn_test_bot(owner_id: str, message: dict[str, Any]) -> bool:
 
 def create_fill_bot() -> None:
     """Add one server-owned AI opponent at a random valid spawn position."""
-    for _ in range(20):
-        x = uniform(ARENA_MIN_X + PLAYER_RADIUS, ARENA_MAX_X - PLAYER_RADIUS)
-        y = uniform(ARENA_MIN_Y + PLAYER_RADIUS, ARENA_MAX_Y - PLAYER_RADIUS)
-        if not position_hits_cover(x, y, PLAYER_RADIUS) and all(
-            hypot(x - player["x"], y - player["y"]) > PLAYER_RADIUS * 3
-            for player in players.values()
-        ):
-            break
-    else:
-        x, y = 1120.0, 720.0
-
     bot_id = f"fill-bot-{uuid4().hex[:6]}"
+    x, y = find_spawn_position(bot_id, len(players))
     players[bot_id] = {
         "id": bot_id,
         "x": x,
@@ -837,6 +829,9 @@ def create_fill_bot() -> None:
         "disconnect_deadline": None,
         "is_bot": True,
         "owner_id": None,
+        "patrol_x": x,
+        "patrol_y": y,
+        "strafe_sign": 1.0 if uuid4().int % 2 else -1.0,
     }
 
 
@@ -863,6 +858,7 @@ def rebalance_fill_bots() -> None:
         for player_id, player in players.copy().items():
             if player["is_bot"]:
                 players.pop(player_id)
+        current_room()["host_player_id"] = None
         round_state["phase"] = "waiting"
         round_state["winner_id"] = None
         round_state["ends_at"] = None
@@ -878,6 +874,7 @@ def add_fill_bot(requester_id: str) -> bool:
         requester is None
         or requester["is_bot"]
         or not requester["connected"]
+        or requester_id != current_room()["host_player_id"]
         or len(players) >= MAX_PLAYERS
     ):
         return False
@@ -892,6 +889,7 @@ def request_match_start(requester_id: str) -> bool:
         requester is None
         or requester["is_bot"]
         or not requester["connected"]
+        or requester_id != current_room()["host_player_id"]
         or len(players) < MIN_PLAYERS_TO_START_ROUND
         or round_state["phase"] != "waiting"
     ):
@@ -911,7 +909,45 @@ def set_bot_move_direction(bot: dict[str, Any], destination_x: float, destinatio
         return 0.0
     bot["move_x"] = direction_x / distance
     bot["move_y"] = direction_y / distance
+    look_ahead_x = bot["x"] + bot["move_x"] * PLAYER_RADIUS * 2
+    look_ahead_y = bot["y"] + bot["move_y"] * PLAYER_RADIUS * 2
+    if position_hits_cover(look_ahead_x, look_ahead_y, PLAYER_RADIUS):
+        strafe_sign = float(bot.get("strafe_sign", 1.0))
+        bot["move_x"] = -direction_y / distance * strafe_sign
+        bot["move_y"] = direction_x / distance * strafe_sign
     return distance
+
+
+def choose_bot_patrol_destination(bot: dict[str, Any]) -> None:
+    """Pick a valid idle destination so bots keep moving between engagements."""
+    for _ in range(20):
+        x = uniform(ARENA_MIN_X + PLAYER_RADIUS, ARENA_MAX_X - PLAYER_RADIUS)
+        y = uniform(ARENA_MIN_Y + PLAYER_RADIUS, ARENA_MAX_Y - PLAYER_RADIUS)
+        if not position_hits_cover(x, y, PLAYER_RADIUS):
+            bot["patrol_x"] = x
+            bot["patrol_y"] = y
+            return
+
+
+def spread_bot_from_nearby_bots(bot: dict[str, Any]) -> None:
+    """Add a small separation force so AI opponents do not form one stack."""
+    separation_x = 0.0
+    separation_y = 0.0
+    for other in players.values():
+        if other is bot or not other["is_bot"] or not other["alive"]:
+            continue
+        offset_x = bot["x"] - other["x"]
+        offset_y = bot["y"] - other["y"]
+        distance = hypot(offset_x, offset_y)
+        if 0 < distance < 170:
+            separation_x += offset_x / distance * (1 - distance / 170)
+            separation_y += offset_y / distance * (1 - distance / 170)
+    combined_x = bot["move_x"] + separation_x * 1.3
+    combined_y = bot["move_y"] + separation_y * 1.3
+    combined_length = hypot(combined_x, combined_y)
+    if combined_length > 0:
+        bot["move_x"] = combined_x / combined_length
+        bot["move_y"] = combined_y / combined_length
 
 
 def advance_fill_bot_ai() -> None:
@@ -933,8 +969,10 @@ def advance_fill_bot_ai() -> None:
             if not player["is_bot"] and player["alive"] and player["connected"]
         ]
         if not targets:
-            bot["move_x"] = 0.0
-            bot["move_y"] = 0.0
+            patrol_x = float(bot.get("patrol_x", bot["x"]))
+            patrol_y = float(bot.get("patrol_y", bot["y"]))
+            if set_bot_move_direction(bot, patrol_x, patrol_y) < 60:
+                choose_bot_patrol_destination(bot)
             continue
 
         target = min(targets, key=lambda player: hypot(player["x"] - bot["x"], player["y"] - bot["y"]))
@@ -959,8 +997,11 @@ def advance_fill_bot_ai() -> None:
 
         if distance_to_target <= preferred_range:
             # Strafe instead of walking directly into the target once close enough.
-            bot["move_x"] = -direction_y / max(distance_to_target, 1.0)
-            bot["move_y"] = direction_x / max(distance_to_target, 1.0)
+            strafe_sign = float(bot.get("strafe_sign", 1.0))
+            bot["move_x"] = -direction_y / max(distance_to_target, 1.0) * strafe_sign
+            bot["move_y"] = direction_x / max(distance_to_target, 1.0) * strafe_sign
+
+        spread_bot_from_nearby_bots(bot)
 
         if bot["weapon"] == "knife" and distance_to_target <= KNIFE_REACH:
             attack_with_knife(bot, {"direction_x": direction_x, "direction_y": direction_y})
@@ -984,6 +1025,11 @@ def remove_expired_disconnections(now: float) -> None:
     for player_id in expired_player_ids:
         players.pop(player_id)
     if expired_player_ids:
+        if current_room()["host_player_id"] in expired_player_ids:
+            current_room()["host_player_id"] = next(
+                (player_id for player_id, player in players.items() if not player["is_bot"]),
+                None,
+            )
         rebalance_fill_bots()
         advance_round(now)
 
@@ -1061,7 +1107,7 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
             ),
             None,
         )
-        if existing_player and not existing_player["connected"]:
+        if existing_player:
             player_id = existing_player["id"]
             existing_player["connected"] = True
             existing_player["connection"] = websocket
@@ -1106,6 +1152,9 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
         "is_bot": False,
         "owner_id": None,
         }
+
+            if current_room()["host_player_id"] is None:
+                current_room()["host_player_id"] = player_id
 
             rebalance_fill_bots()
 
