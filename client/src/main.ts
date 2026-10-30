@@ -43,6 +43,7 @@ app.innerHTML = `
       <div class="game-frame">
         <span class="stage-label">Weapon pickup arena</span>
         <div id="game-root"></div>
+        <button class="mobile-fullscreen" id="mobile-fullscreen" type="button" hidden>⛶ Full screen</button>
       </div>
 
       <aside class="panel">
@@ -108,6 +109,8 @@ const lobbyMessage = document.querySelector<HTMLElement>("#lobby-message");
 const roomList = document.querySelector<HTMLElement>("#room-list");
 const roomCodeElement = document.querySelector<HTMLElement>("#room-code");
 const copyRoomCodeButton = document.querySelector<HTMLButtonElement>("#copy-room-code");
+const gameFrame = document.querySelector<HTMLElement>(".game-frame");
+const mobileFullscreenButton = document.querySelector<HTMLButtonElement>("#mobile-fullscreen");
 
 interface TestPlayerState {
   id: string;
@@ -120,6 +123,27 @@ interface TestPlayerState {
 let localPlayerId: string | null = null;
 let currentRoomCode: string | null = null;
 let gameSocket: GameSocket | null = null;
+
+function usesMobileBattlefield(): boolean {
+  return (
+    navigator.maxTouchPoints > 0 &&
+    window.matchMedia("(max-width: 820px)").matches
+  );
+}
+
+async function enterMobileFullscreen(): Promise<void> {
+  if (!gameFrame) return;
+
+  try {
+    await gameFrame.requestFullscreen();
+    const orientation = screen.orientation as ScreenOrientation & {
+      lock?: (orientation: "landscape") => Promise<void>;
+    };
+    await orientation.lock?.("landscape");
+  } catch {
+    // Some mobile browsers do not allow element fullscreen. The mobile layout still fills the viewport.
+  }
+}
 
 function isTestPlayerState(value: unknown): value is TestPlayerState {
   if (typeof value !== "object" || value === null) {
@@ -195,6 +219,9 @@ function apiUrl(path: string): string {
 
 function startGame(roomCode: string): void {
   currentRoomCode = roomCode;
+  const mobileBattlefield = usesMobileBattlefield();
+  document.body.classList.toggle("mobile-battlefield", mobileBattlefield);
+  if (mobileFullscreenButton) mobileFullscreenButton.hidden = !mobileBattlefield;
   roomCodeElement && (roomCodeElement.textContent = roomCode);
   lobby?.setAttribute("hidden", "");
   gameShell?.removeAttribute("hidden");
@@ -246,6 +273,9 @@ joinRoomButton?.addEventListener("click", () => {
 });
 copyRoomCodeButton?.addEventListener("click", async () => {
   if (currentRoomCode) await navigator.clipboard.writeText(currentRoomCode);
+});
+mobileFullscreenButton?.addEventListener("click", () => {
+  void enterMobileFullscreen();
 });
 spawnTestBotButton?.addEventListener("click", () => gameSocket?.send({ type: "spawn_test_bot" }));
 respawnTestBotButton?.addEventListener("click", () => {
