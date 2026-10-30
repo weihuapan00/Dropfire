@@ -460,10 +460,9 @@ body {
 .lobby h1 em { color: #ff806d; font-style: normal; }
 .lobby-intro { max-width: 470px; margin: 24px 0 30px; color: #a5b2c5; font-size: 1rem; line-height: 1.65; }
 .lobby-actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
-.repo-link { margin: 24px 0 0; font-size: .85rem; }
-.repo-link a { display: inline-flex; align-items: center; gap: 8px; color: #a5b2c5; text-underline-offset: 4px; }
+.repo-link { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; margin-left: 4px; border-radius: 8px; color: #a5b2c5; }
 .repo-link svg { flex-shrink: 0; }
-.repo-link a:hover, .repo-link a:focus-visible { color: #69f4c1; }
+.repo-link:hover, .repo-link:focus-visible { color: #69f4c1; background: rgba(105, 244, 193, .08); }
 .primary-action { display: flex; align-items: center; justify-content: space-between; border-color: #69f4c1; padding: 14px 16px; color: #072018; background: #69f4c1; font-size: .94rem; }
 .primary-action span { font-size: 1.25rem; line-height: .7; }
 .primary-action:hover { border-color: #b2ffdc; background: #8cffd2; box-shadow: 0 8px 26px rgba(91, 242, 189, .18); }
