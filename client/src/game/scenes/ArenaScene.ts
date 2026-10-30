@@ -78,6 +78,7 @@ interface PlayerState {
   respawn_ends_in_seconds: number;
   spawn_protection_ends_in_seconds: number;
   is_bot: boolean;
+  name: string | null;
 }
 
 interface PickupState {
@@ -149,6 +150,7 @@ function isPlayerState(value: unknown): value is PlayerState {
     typeof player.respawn_ends_in_seconds === "number" &&
     typeof player.spawn_protection_ends_in_seconds === "number"
     && typeof player.is_bot === "boolean"
+    && (typeof player.name === "string" || player.name === null)
   );
 }
 
@@ -250,6 +252,8 @@ export class ArenaScene extends Phaser.Scene {
   private localPlayerIsReloading = false;
   private roundPhase: RoundState["phase"] = "waiting";
   private readonly playerAliveStates = new Map<string, boolean>();
+  private readonly playerNames = new Map<string, string>();
+  private readonly killFeedEntries: Array<{ text: string; expiresAt: number }> = [];
   private hasSyncedCovers = false;
   private lastRoundHudText = "";
   private lastScoreboardText = "";
@@ -273,6 +277,7 @@ export class ArenaScene extends Phaser.Scene {
   private scoreboardHud!: Phaser.GameObjects.Text;
   private spectatorHud!: Phaser.GameObjects.Text;
   private performanceHud!: Phaser.GameObjects.Text;
+  private killFeedHud!: Phaser.GameObjects.Text;
   private pingMs: number | null = null;
   private nextPingAt = 0;
   private nextPerformanceHudUpdateAt = 0;
@@ -350,6 +355,19 @@ export class ArenaScene extends Phaser.Scene {
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
         fontSize: "13px",
         padding: { x: 7, y: 5 },
+      })
+      .setOrigin(1, 0)
+      .setScrollFactor(0)
+      .setDepth(100);
+    this.killFeedHud = this.add
+      .text(1262, 150, "", {
+        backgroundColor: "#111a27",
+        color: "#f4f7fb",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "13px",
+        fontStyle: "bold",
+        align: "right",
+        padding: { x: 8, y: 6 },
       })
       .setOrigin(1, 0)
       .setScrollFactor(0)
@@ -451,6 +469,7 @@ export class ArenaScene extends Phaser.Scene {
     this.interpolatePlayers(delta);
     this.interpolateBullets(delta);
     this.updatePerformanceHud(time);
+    this.pruneKillFeed(time);
 
     if (!this.localPlayerIsAlive && Phaser.Input.Keyboard.JustDown(this.spectateKey)) {
       this.followNextSpectator();
@@ -593,6 +612,7 @@ export class ArenaScene extends Phaser.Scene {
       this.reloadProgress.set(playerState.id, playerState.reload_progress);
       this.meleeProgress.set(playerState.id, playerState.melee_progress);
       this.meleeAngles.set(playerState.id, playerState.melee_angle);
+      this.playerNames.set(playerState.id, this.displayNameFor(playerState));
       this.playerAliveStates.set(playerState.id, playerState.alive);
       if (playerState.id === this.localPlayerId) {
         this.localPlayer = player;
@@ -638,6 +658,7 @@ export class ArenaScene extends Phaser.Scene {
         this.meleeIndicators.delete(playerId);
         this.meleeProgress.delete(playerId);
         this.meleeAngles.delete(playerId);
+        this.playerNames.delete(playerId);
         this.playerAliveStates.delete(playerId);
         if (playerId === this.localPlayerId) {
           this.localPlayer = null;
@@ -682,13 +703,26 @@ export class ArenaScene extends Phaser.Scene {
       (left, right) => right.kills - left.kills || right.damage_dealt - left.damage_dealt,
     );
     const lines = rankedPlayers.map((player, index) => {
-      const name = player.id === this.localPlayerId ? "YOU" : player.is_bot ? "BOT" : `P${player.id.slice(0, 4)}`;
+      const name = this.displayNameFor(player);
       return `${index + 1}. ${name}  ${player.kills} K · ${Math.round(player.damage_dealt)} DMG`;
     });
     const text = ["LEADERBOARD", ...lines].join("\n");
     if (text === this.lastScoreboardText) return;
     this.lastScoreboardText = text;
     this.scoreboardHud.setText(text);
+  }
+
+  private displayNameFor(playerState: PlayerState): string {
+    if (playerState.id === this.localPlayerId) {
+      return "YOU";
+    }
+    if (playerState.name) {
+      return playerState.name;
+    }
+    if (playerState.is_bot) {
+      return "BOT";
+    }
+    return `P${playerState.id.slice(0, 4)}`;
   }
 
   private followNextSpectator(advance = true): void {
@@ -725,7 +759,9 @@ export class ArenaScene extends Phaser.Scene {
       return;
     }
 
-    const owner = playerState.id === this.localPlayerId ? "YOU · " : playerState.is_bot ? "BOT · " : "";
+    const owner = playerState.id === this.localPlayerId
+      ? "YOU · "
+      : `${this.displayNameFor(playerState)} · `;
     const ammo = playerState.magazine_capacity > 0
       ? ` · ${playerState.ammo_in_mag}/${playerState.magazine_capacity}`
       : "";
@@ -1058,7 +1094,7 @@ export class ArenaScene extends Phaser.Scene {
         soundscape.playHurt();
       }
       if (hit.killed) {
-        this.showKillMessage(hit);
+        this.addKillFeedEntry(hit.attacker_id, hit.target_id);
       }
     }
   }
@@ -1132,35 +1168,32 @@ export class ArenaScene extends Phaser.Scene {
     });
   }
 
-  private showKillMessage(hit: HitEvent): void {
-    const message = hit.attacker_id === this.localPlayerId
-      ? "YOU ELIMINATED AN ENEMY"
-      : hit.target_id === this.localPlayerId
-        ? "YOU WERE ELIMINATED"
-        : "";
-    if (!message) {
-      return;
-    }
-
-    const text = this.add.text(
-      this.cameras.main.width / 2,
-      this.cameras.main.height / 2 + 30,
-      message,
-      {
-        fontFamily: "system-ui, sans-serif",
-        fontSize: "22px",
-        fontStyle: "bold",
-        color: hit.attacker_id === this.localPlayerId ? "#69f4c1" : "#ff6b6b",
-      },
-    ).setOrigin(0.5).setScrollFactor(0).setDepth(251);
-    this.tweens.add({
-      targets: text,
-      alpha: 0,
-      y: text.y - 20,
-      delay: 450,
-      duration: 500,
-      onComplete: () => text.destroy(),
+  private addKillFeedEntry(attackerId: string, targetId: string): void {
+    const killer = this.playerNames.get(attackerId) ?? attackerId.slice(0, 4);
+    const victim = this.playerNames.get(targetId) ?? targetId.slice(0, 4);
+    this.killFeedEntries.push({
+      text: `${killer}  ▸  ${victim}`,
+      expiresAt: this.time.now + 4500,
     });
+    if (this.killFeedEntries.length > 5) {
+      this.killFeedEntries.shift();
+    }
+    this.renderKillFeed();
+  }
+
+  private renderKillFeed(): void {
+    this.killFeedHud.setText(this.killFeedEntries.map((entry) => entry.text).join("\n"));
+  }
+
+  private pruneKillFeed(now: number): void {
+    let changed = false;
+    while (this.killFeedEntries.length > 0 && this.killFeedEntries[0].expiresAt <= now) {
+      this.killFeedEntries.shift();
+      changed = true;
+    }
+    if (changed) {
+      this.renderKillFeed();
+    }
   }
 
   private drawArena(): void {

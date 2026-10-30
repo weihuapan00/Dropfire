@@ -268,7 +268,7 @@ def advance_fill_bot_ai(now: float) -> None:
         targets = [
             player
             for player in players.values()
-            if not player["is_bot"] and player["alive"] and player["connected"]
+            if player["id"] != bot["id"] and player["alive"] and player["connected"]
         ]
         if not targets:
             patrol_x = float(bot.get("patrol_x", bot["x"]))

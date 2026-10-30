@@ -16,7 +16,10 @@ export class GameSocket {
   private readonly listeners = new Set<ConnectionListener>();
   private readonly messageListeners = new Set<MessageListener>();
 
-  constructor(private readonly roomCode: string) {}
+  constructor(
+    private readonly roomCode: string,
+    private readonly playerName = "",
+  ) {}
 
   connect(): void {
     if (this.socket?.readyState === WebSocket.OPEN) {
@@ -89,7 +92,7 @@ export class GameSocket {
     const deployedUrl = `${protocol}//${window.location.host}/ws`;
     const baseUrl = configuredUrl
       ?? (import.meta.env.DEV ? localDevelopmentUrl : deployedUrl);
-    return `${baseUrl.replace(/\/$/, "")}/${encodeURIComponent(this.roomCode)}?session=${encodeURIComponent(this.sessionToken)}`;
+    return `${baseUrl.replace(/\/$/, "")}/${encodeURIComponent(this.roomCode)}?session=${encodeURIComponent(this.sessionToken)}&name=${encodeURIComponent(this.playerName)}`;
   }
 
   private scheduleReconnect(): void {

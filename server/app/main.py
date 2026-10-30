@@ -102,6 +102,14 @@ app.add_middleware(
 )
 
 
+def sanitize_player_name(raw_name: str | None) -> str | None:
+    """Return a trimmed, bounded player name or None when no name was provided."""
+    if not isinstance(raw_name, str):
+        return None
+    name = " ".join(raw_name.split())[:16]
+    return name or None
+
+
 @app.get("/api/rooms")
 async def list_rooms() -> list[dict[str, Any]]:
     """List in-memory rooms that a browser can join from the lobby."""
@@ -150,6 +158,7 @@ async def broadcast_world_state() -> None:
                 "respawn_ends_in_seconds": get_respawn_ends_in_seconds(player, now),
                 "spawn_protection_ends_in_seconds": get_spawn_protection_ends_in_seconds(player, now),
                 "is_bot": player["is_bot"],
+                "name": player.get("name"),
                 "owner_id": player["owner_id"],
                 "is_host": player_id == current_room()["host_player_id"],
             }
@@ -226,6 +235,7 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
     try:
         await websocket.accept()
         session_token = websocket.query_params.get("session")
+        requested_name = sanitize_player_name(websocket.query_params.get("name"))
         existing_player = next(
             (
                 player
@@ -239,6 +249,8 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
             existing_player["connected"] = True
             existing_player["connection"] = websocket
             existing_player["disconnect_deadline"] = None
+            if requested_name:
+                existing_player["name"] = requested_name
         else:
             if not session_token or existing_player:
                 session_token = uuid4().hex
@@ -280,6 +292,7 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
                 "disconnect_deadline": None,
                 "is_bot": False,
                 "owner_id": None,
+                "name": requested_name,
             }
 
             if current_room()["host_player_id"] is None:

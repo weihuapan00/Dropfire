@@ -19,6 +19,7 @@ app.innerHTML = `
     <h1>Drop in.<br /><em>Own the arena.</em></h1>
     <p class="lobby-intro">Create a private match for your squad, or enter a six-character invite code to join the fight.</p>
     <div class="lobby-actions">
+      <input class="test-select name-input" id="player-name-input" maxlength="16" placeholder="YOUR NAME (optional)" autocomplete="off" />
       <button class="test-button primary-action" id="create-room" type="button">Create a room <span>→</span></button>
       <div class="join-code"><input class="test-select" id="room-code-input" maxlength="6" placeholder="ENTER CODE" autocomplete="off" /><button class="test-button" id="join-room" type="button">Join</button></div>
     </div>
@@ -95,6 +96,7 @@ const roomLobby = document.querySelector<HTMLElement>("#room-lobby");
 const gameShell = document.querySelector<HTMLElement>("#game-shell");
 const createRoomButton = document.querySelector<HTMLButtonElement>("#create-room");
 const joinRoomButton = document.querySelector<HTMLButtonElement>("#join-room");
+const playerNameInput = document.querySelector<HTMLInputElement>("#player-name-input");
 const roomCodeInput = document.querySelector<HTMLInputElement>("#room-code-input");
 const lobbyMessage = document.querySelector<HTMLElement>("#lobby-message");
 const roomList = document.querySelector<HTMLElement>("#room-list");
@@ -112,6 +114,7 @@ const startMatchButton = document.querySelector<HTMLButtonElement>("#start-match
 
 interface WaitingPlayerState {
   id: string;
+  name: string | null;
   is_bot: boolean;
   connected: boolean;
   is_host: boolean;
@@ -133,6 +136,11 @@ function renderMusicToggle(): void {
 }
 let arenaStarted = false;
 const LAST_ROOM_STORAGE_KEY = "dropfire-last-room-code";
+const PLAYER_NAME_STORAGE_KEY = "dropfire-player-name";
+
+function getPlayerName(): string {
+  return playerNameInput?.value.trim() ?? "";
+}
 
 function usesMobileBattlefield(): boolean {
   return (
@@ -163,6 +171,7 @@ function isWaitingPlayerState(value: unknown): value is WaitingPlayerState {
   const player = value as Record<string, unknown>;
   return (
     typeof player.id === "string" &&
+    (typeof player.name === "string" || player.name === null) &&
     typeof player.is_bot === "boolean" &&
     typeof player.connected === "boolean" &&
     typeof player.is_host === "boolean"
@@ -185,7 +194,7 @@ function renderWaitingRoom(players: WaitingPlayerState[], round: WaitingRoundSta
   waitingPlayerList.innerHTML = "";
   for (const player of players) {
     const item = document.createElement("li");
-    const identity = player.is_bot ? "AI BOT" : `HUMAN P-${player.id.slice(0, 6)}`;
+    const identity = player.is_bot ? "AI BOT" : player.name ?? `HUMAN P-${player.id.slice(0, 6)}`;
     const self = player.id === localPlayerId ? " · YOU" : "";
     const host = player.is_host ? " · HOST" : "";
     const connection = player.connected ? "READY" : "RECONNECTING";
@@ -256,7 +265,7 @@ function enterRoom(roomCode: string): void {
   waitingMessage && (waitingMessage.textContent = "Connecting to room…");
   lobby?.setAttribute("hidden", "");
   roomLobby?.removeAttribute("hidden");
-  gameSocket = new GameSocket(roomCode);
+  gameSocket = new GameSocket(roomCode, getPlayerName());
   gameSocket.onStateChange((state) => {
     renderConnectionState(state);
     if (state === "disconnected" && waitingMessage) {
@@ -326,6 +335,12 @@ audioToggleButton?.addEventListener("click", () => {
   renderMusicToggle();
 });
 renderMusicToggle();
+if (playerNameInput) {
+  playerNameInput.value = localStorage.getItem(PLAYER_NAME_STORAGE_KEY) ?? "";
+}
+playerNameInput?.addEventListener("input", () => {
+  localStorage.setItem(PLAYER_NAME_STORAGE_KEY, playerNameInput.value);
+});
 addAiBotButton?.addEventListener("click", () => gameSocket?.send({ type: "add_ai_bot" }));
 startMatchButton?.addEventListener("click", () => gameSocket?.send({ type: "start_match" }));
 void refreshRooms();
