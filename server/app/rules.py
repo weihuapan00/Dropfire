@@ -18,13 +18,9 @@ from .config import (
     BULLET_RADIUS,
     COVER_WALLS,
     DEFAULT_WEAPON,
-    KNIFE_COOLDOWN_SECONDS,
-    KNIFE_DAMAGE,
-    KNIFE_MINIMUM_DOT_PRODUCT,
-    KNIFE_REACH,
     MAGAZINE_CAPACITIES,
     MATCH_DURATION_SECONDS,
-    MELEE_ATTACK_DURATION_SECONDS,
+    MELEE_WEAPON_SETTINGS,
     MIN_PLAYERS_TO_START_ROUND,
     MIN_SPAWN_DISTANCE_FROM_ENEMY,
     PICKUP_RADIUS,
@@ -152,9 +148,15 @@ def reload_weapon(player: dict[str, Any]) -> bool:
     return True
 
 
-def attack_with_knife(player: dict[str, Any], message: dict[str, Any]) -> bool:
-    """Perform one server-validated knife swing and damage the closest target in its arc."""
-    if not player["alive"] or not player["connected"] or not round_is_active() or player["weapon"] != "knife":
+def attack_with_melee(player: dict[str, Any], message: dict[str, Any]) -> bool:
+    """Perform one server-validated melee swing and damage the closest target in its arc."""
+    melee_settings = MELEE_WEAPON_SETTINGS.get(player["weapon"])
+    if (
+        melee_settings is None
+        or not player["alive"]
+        or not player["connected"]
+        or not round_is_active()
+    ):
         return False
 
     direction_x = message.get("direction_x")
@@ -172,18 +174,18 @@ def attack_with_knife(player: dict[str, Any], message: dict[str, Any]) -> bool:
         return False
 
     now = monotonic()
-    if now - player["last_melee_at"] < KNIFE_COOLDOWN_SECONDS:
+    if now - player["last_melee_at"] < melee_settings["cooldown_seconds"]:
         return False
 
     normalized_x = direction_x / direction_length
     normalized_y = direction_y / direction_length
     player["last_melee_at"] = now
     player["melee_started_at"] = now
-    player["melee_ends_at"] = now + MELEE_ATTACK_DURATION_SECONDS
+    player["melee_ends_at"] = now + melee_settings["attack_duration_seconds"]
     player["melee_angle"] = atan2(normalized_y, normalized_x)
 
     closest_target: dict[str, Any] | None = None
-    closest_distance = KNIFE_REACH
+    closest_distance = melee_settings["reach"]
     for target_id, target in players.items():
         if target_id == player["id"] or not target["alive"] or not target["connected"]:
             continue
@@ -195,12 +197,12 @@ def attack_with_knife(player: dict[str, Any], message: dict[str, Any]) -> bool:
             continue
 
         dot_product = normalized_x * offset_x / distance + normalized_y * offset_y / distance
-        if dot_product >= KNIFE_MINIMUM_DOT_PRODUCT:
+        if dot_product >= melee_settings["minimum_dot_product"]:
             closest_target = target
             closest_distance = distance
 
     if closest_target:
-        apply_damage(closest_target, KNIFE_DAMAGE, player["id"])
+        apply_damage(closest_target, melee_settings["damage"], player["id"])
     return True
 
 
@@ -217,7 +219,8 @@ def get_melee_progress(player: dict[str, Any], now: float) -> float:
     melee_ends_at = player["melee_ends_at"]
     if melee_ends_at is None:
         return 0.0
-    return max(0.0, min(1.0, 1 - (melee_ends_at - now) / MELEE_ATTACK_DURATION_SECONDS))
+    attack_duration = MELEE_WEAPON_SETTINGS.get(player["weapon"], {}).get("attack_duration_seconds", 0.18)
+    return max(0.0, min(1.0, 1 - (melee_ends_at - now) / attack_duration))
 
 
 def advance_reloads(now: float) -> None:
@@ -342,12 +345,33 @@ def collect_weapon_pickup(player: dict[str, Any]) -> bool:
     for pickup in weapon_pickups.copy():
         distance_to_pickup = hypot(player["x"] - pickup["x"], player["y"] - pickup["y"])
         if distance_to_pickup <= PLAYER_RADIUS + PICKUP_RADIUS:
-            player["weapon"] = pickup["weapon"]
-            player["magazine_capacity"] = MAGAZINE_CAPACITIES.get(pickup["weapon"], 0)
-            player["ammo_in_mag"] = player["magazine_capacity"]
-            player["reload_ends_at"] = None
+            if pickup["weapon"] in MELEE_WEAPON_SETTINGS:
+                player["melee_weapon"] = pickup["weapon"]
+                player["weapon"] = pickup["weapon"]
+            else:
+                player["gun_weapon"] = pickup["weapon"]
+                player["magazine_capacity"] = MAGAZINE_CAPACITIES.get(pickup["weapon"], 0)
+                player["ammo_in_mag"] = player["magazine_capacity"]
+                player["reload_ends_at"] = None
+                player["weapon"] = pickup["weapon"]
             weapon_pickups.remove(pickup)
             return True
+
+    return False
+
+
+def switch_weapon(player: dict[str, Any]) -> bool:
+    """Toggle the active weapon between the ranged and melee slots."""
+    if not player["alive"] or not player["connected"]:
+        return False
+
+    if player["weapon"] in RANGED_WEAPON_SETTINGS:
+        player["weapon"] = player.get("melee_weapon", DEFAULT_WEAPON)
+        return True
+
+    if player.get("gun_weapon") is not None:
+        player["weapon"] = player["gun_weapon"]
+        return True
 
     return False
 
@@ -403,6 +427,8 @@ def respawn_player(player: dict[str, Any], player_number: int) -> None:
     player["melee_ends_at"] = None
     player["melee_angle"] = 0.0
     player["weapon"] = DEFAULT_WEAPON
+    player["melee_weapon"] = DEFAULT_WEAPON
+    player["gun_weapon"] = None
     player["ammo_in_mag"] = 0
     player["magazine_capacity"] = 0
     player["reload_ends_at"] = None

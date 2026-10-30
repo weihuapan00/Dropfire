@@ -38,9 +38,9 @@ app.innerHTML = `
     <p id="waiting-message" class="waiting-message">Connecting to room…</p>
     <section class="lobby-rules">
       <h2>How to play</h2>
-      <p><strong>Desktop:</strong> WASD / arrows move · mouse aims and fires · E picks up · R reloads.</p>
-      <p><strong>Mobile:</strong> left stick moves · right side aims and fires · use PICK and RELOAD buttons.</p>
-      <p>Matches last 3 minutes. Ranking uses kills, then total damage. Everyone starts with a knife; pistols and rifles must be found.</p>
+      <p><strong>Desktop:</strong> WASD / arrows move · mouse aims and fires · E picks up · R reloads · G switches weapon.</p>
+      <p><strong>Mobile:</strong> left stick moves · right side aims and fires · use SWITCH / PICK / RELOAD buttons.</p>
+      <p>Matches last 3 minutes. Ranking uses kills, then total damage. Everyone starts with fists; scarce one-shot knives, pistols, and rifles must be found.</p>
     </section>
   </section>
   <main class="shell" id="game-shell" hidden>

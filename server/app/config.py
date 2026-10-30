@@ -27,23 +27,34 @@ RANGED_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
 MAGAZINE_CAPACITIES = {"pistol": 12, "rifle": 30}
 RELOAD_DURATION_SECONDS = 1.2
 
-KNIFE_DAMAGE = 100.0
-KNIFE_REACH = 88.0
-KNIFE_MINIMUM_DOT_PRODUCT = 0.45
-KNIFE_COOLDOWN_SECONDS = 0.65
-MELEE_ATTACK_DURATION_SECONDS = 0.18
+MELEE_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
+    "fists": {
+        "damage": 30.0,
+        "reach": 62.0,
+        "cooldown_seconds": 0.5,
+        "minimum_dot_product": 0.5,
+        "attack_duration_seconds": 0.16,
+    },
+    "knife": {
+        "damage": 100.0,
+        "reach": 88.0,
+        "cooldown_seconds": 0.65,
+        "minimum_dot_product": 0.45,
+        "attack_duration_seconds": 0.18,
+    },
+}
 
-DEFAULT_WEAPON = "knife"
+DEFAULT_WEAPON = "fists"
 INITIAL_WEAPON_PICKUPS = (
-    # Eight mirrored pistols: every starting sector has one reachable first weapon.
+    # Four outer pistols and four scarce one-shot knives, plus two central rifles.
     ("pistol-1", "pistol", 600.0, 410.0),
-    ("pistol-2", "pistol", 1080.0, 430.0),
-    ("pistol-3", "pistol", 1480.0, 430.0),
-    ("pistol-4", "pistol", 1960.0, 410.0),
-    ("pistol-5", "pistol", 600.0, 1030.0),
-    ("pistol-6", "pistol", 1080.0, 1010.0),
-    ("pistol-7", "pistol", 1480.0, 1010.0),
-    ("pistol-8", "pistol", 1960.0, 1030.0),
+    ("knife-1", "knife", 1080.0, 430.0),
+    ("knife-2", "knife", 1480.0, 430.0),
+    ("pistol-2", "pistol", 1960.0, 410.0),
+    ("pistol-3", "pistol", 600.0, 1030.0),
+    ("knife-3", "knife", 1080.0, 1010.0),
+    ("knife-4", "knife", 1480.0, 1010.0),
+    ("pistol-4", "pistol", 1960.0, 1030.0),
     # Strong rifles are deliberately central and exposed from both side lanes.
     ("rifle-1", "rifle", 1140.0, 720.0),
     ("rifle-2", "rifle", 1420.0, 720.0),

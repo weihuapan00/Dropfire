@@ -14,8 +14,8 @@ from .config import (
     BOT_FIRE_RANGES,
     BOT_PREFERRED_RANGES,
     DEFAULT_WEAPON,
-    KNIFE_REACH,
     MAX_PLAYERS,
+    MELEE_WEAPON_SETTINGS,
     PICKUP_RADIUS,
     PLAYER_MAX_HP,
     PLAYER_RADIUS,
@@ -25,7 +25,7 @@ from .config import (
 )
 from .rules import (
     advance_round,
-    attack_with_knife,
+    attack_with_melee,
     collect_weapon_pickup,
     fire_weapon,
     find_spawn_position,
@@ -55,6 +55,8 @@ def spawn_test_bot(owner_id: str) -> bool:
         "melee_ends_at": None,
         "melee_angle": 0.0,
         "weapon": DEFAULT_WEAPON,
+        "melee_weapon": DEFAULT_WEAPON,
+        "gun_weapon": None,
         "ammo_in_mag": 0,
         "magazine_capacity": 0,
         "reload_ends_at": None,
@@ -94,6 +96,8 @@ def respawn_test_bot(owner_id: str, message: dict[str, Any]) -> bool:
     bot["melee_ends_at"] = None
     bot["melee_angle"] = 0.0
     bot["weapon"] = DEFAULT_WEAPON
+    bot["melee_weapon"] = DEFAULT_WEAPON
+    bot["gun_weapon"] = None
     bot["ammo_in_mag"] = 0
     bot["magazine_capacity"] = 0
     bot["reload_ends_at"] = None
@@ -121,6 +125,8 @@ def create_fill_bot() -> None:
         "melee_ends_at": None,
         "melee_angle": 0.0,
         "weapon": DEFAULT_WEAPON,
+        "melee_weapon": DEFAULT_WEAPON,
+        "gun_weapon": None,
         "ammo_in_mag": 0,
         "magazine_capacity": 0,
         "reload_ends_at": None,
@@ -299,8 +305,9 @@ def advance_fill_bot_ai(now: float) -> None:
 
         spread_bot_from_nearby_bots(bot)
 
-        if bot["weapon"] == "knife" and distance_to_target <= KNIFE_REACH:
-            attack_with_knife(bot, {"direction_x": direction_x, "direction_y": direction_y})
+        melee_settings = MELEE_WEAPON_SETTINGS.get(bot["weapon"])
+        if melee_settings is not None and distance_to_target <= melee_settings["reach"]:
+            attack_with_melee(bot, {"direction_x": direction_x, "direction_y": direction_y})
         elif bot["weapon"] in BOT_FIRE_RANGES:
             if bot["ammo_in_mag"] <= 0:
                 reload_weapon(bot)

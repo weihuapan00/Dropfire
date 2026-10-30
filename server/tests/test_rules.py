@@ -8,9 +8,11 @@ from app.rules import (
     advance_round,
     apply_damage,
     apply_move_intent,
+    attack_with_melee,
     collect_weapon_pickup,
     fire_weapon,
     request_match_start,
+    switch_weapon,
 )
 from app.state import bullets, weapon_pickups
 
@@ -28,7 +30,9 @@ def make_player(player_id: str, **overrides):
         "melee_started_at": None,
         "melee_ends_at": None,
         "melee_angle": 0.0,
-        "weapon": "knife",
+        "weapon": "fists",
+        "melee_weapon": "fists",
+        "gun_weapon": None,
         "ammo_in_mag": 0,
         "magazine_capacity": 0,
         "reload_ends_at": None,
@@ -153,10 +157,69 @@ def test_collect_weapon_pickup_equips_and_removes_pickup(room):
 
     assert collected is True
     assert player["weapon"] == "pistol"
+    assert player["gun_weapon"] == "pistol"
     assert player["ammo_in_mag"] == 12
     assert player["magazine_capacity"] == 12
     assert "pistol-1" in pickup_ids_before
     assert "pistol-1" not in {pickup["id"] for pickup in weapon_pickups}
+
+
+def test_collect_knife_upgrades_melee_slot(room):
+    activate_round(room)
+    player = make_player("p1", x=1080.0, y=430.0)
+    room["players"]["p1"] = player
+
+    collected = collect_weapon_pickup(player)
+
+    assert collected is True
+    assert player["weapon"] == "knife"
+    assert player["melee_weapon"] == "knife"
+    assert player["gun_weapon"] is None
+    assert "knife-1" not in {pickup["id"] for pickup in weapon_pickups}
+
+
+def test_switch_weapon_toggles_between_gun_and_melee(room):
+    activate_round(room)
+    player = make_player(
+        "p1",
+        weapon="pistol",
+        melee_weapon="knife",
+        gun_weapon="pistol",
+        ammo_in_mag=12,
+        magazine_capacity=12,
+    )
+    room["players"]["p1"] = player
+
+    assert switch_weapon(player) is True
+    assert player["weapon"] == "knife"
+
+    assert switch_weapon(player) is True
+    assert player["weapon"] == "pistol"
+
+
+def test_melee_damage_differs_by_weapon(room):
+    activate_round(room)
+    attacker = make_player("attacker", x=1280.0, y=720.0, melee_weapon="knife", weapon="knife")
+    target = make_player("target", x=1280.0 + 40.0, y=720.0)
+    room["players"]["attacker"] = attacker
+    room["players"]["target"] = target
+
+    hit = attack_with_melee(attacker, {"direction_x": 1.0, "direction_y": 0.0})
+
+    assert hit is True
+    assert target["hp"] == 0
+    assert target["alive"] is False
+
+    fists_attacker = make_player("fists", x=1280.0, y=720.0, weapon="fists", melee_weapon="fists")
+    fists_target = make_player("fists-target", x=1280.0 + 40.0, y=720.0)
+    room["players"]["fists"] = fists_attacker
+    room["players"]["fists-target"] = fists_target
+
+    hit = attack_with_melee(fists_attacker, {"direction_x": 1.0, "direction_y": 0.0})
+
+    assert hit is True
+    assert fists_target["hp"] == 70
+    assert fists_target["alive"] is True
 
 
 def test_advance_round_starts_when_requested(room):

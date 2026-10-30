@@ -23,6 +23,7 @@ const MOBILE_JOYSTICK_Y = 592;
 const MOBILE_JOYSTICK_RADIUS = 70;
 const MOBILE_AIM_JOYSTICK_X = 1154;
 const MOBILE_AIM_JOYSTICK_Y = 592;
+const MOBILE_SWITCH_X = 834;
 const MOBILE_PICKUP_X = 1004;
 const MOBILE_RELOAD_X = 1174;
 const MOBILE_ACTION_Y = 462;
@@ -62,6 +63,8 @@ interface PlayerState {
   x: number;
   y: number;
   weapon: WeaponType;
+  melee_weapon: WeaponType;
+  gun_weapon: WeaponType | null;
   ammo_in_mag: number;
   magazine_capacity: number;
   reload_progress: number;
@@ -121,6 +124,8 @@ function isPlayerState(value: unknown): value is PlayerState {
     typeof player.x === "number" &&
     typeof player.y === "number" &&
     isWeaponType(player.weapon) &&
+    isWeaponType(player.melee_weapon) &&
+    (player.gun_weapon === null || isWeaponType(player.gun_weapon)) &&
     typeof player.ammo_in_mag === "number" &&
     typeof player.magazine_capacity === "number" &&
     typeof player.reload_progress === "number" &&
@@ -213,6 +218,7 @@ export class ArenaScene extends Phaser.Scene {
   private localPlayerId: string | null = null;
   private localPlayer: Phaser.GameObjects.Arc | null = null;
   private localWeapon: WeaponType = "fists";
+  private localAmmoInMag = 0;
   private localPlayerIsAlive = true;
   private localPlayerIsReloading = false;
   private roundPhase: RoundState["phase"] = "waiting";
@@ -248,6 +254,7 @@ export class ArenaScene extends Phaser.Scene {
   private reloadKey!: Phaser.Input.Keyboard.Key;
   private pickupKey!: Phaser.Input.Keyboard.Key;
   private spectateKey!: Phaser.Input.Keyboard.Key;
+  private switchKey!: Phaser.Input.Keyboard.Key;
 
   constructor(
     private readonly gameSocket: GameSocket,
@@ -364,6 +371,7 @@ export class ArenaScene extends Phaser.Scene {
     this.reloadKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
     this.pickupKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
     this.spectateKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.P);
+    this.switchKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.G);
 
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.handlePointerDown(pointer));
     this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => this.handlePointerMove(pointer));
@@ -371,6 +379,12 @@ export class ArenaScene extends Phaser.Scene {
 
     if (this.isTouchControlScheme) {
       this.mobileControls = this.add.graphics().setScrollFactor(0).setDepth(110);
+      this.add.text(MOBILE_SWITCH_X, MOBILE_ACTION_Y, "SWITCH", {
+        color: "#f4f7fb",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "13px",
+        fontStyle: "bold",
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(111);
       this.add.text(MOBILE_PICKUP_X, MOBILE_ACTION_Y, "PICK", {
         color: "#f4f7fb",
         fontFamily: "system-ui, sans-serif",
@@ -391,8 +405,8 @@ export class ArenaScene extends Phaser.Scene {
         640,
         680,
         this.isTouchControlScheme
-          ? "Left stick: move  •  Right stick: aim & fire  •  PICK / RELOAD above it"
-          : "Move: WASD / arrows  •  E: pick up  •  R: reload  •  P: spectate next  •  Knife: click  •  Pistol: click  •  Rifle: hold left click",
+          ? "Left stick: move  •  Right stick: aim & fire  •  SWITCH / PICK / RELOAD above it"
+          : "Move: WASD / arrows  •  E: pick up  •  R: reload  •  G: switch weapon  •  P: spectate next  •  Fists/Knife: click  •  Pistol: click  •  Rifle: hold left click",
         {
         color: "#96a3b6",
         fontFamily: "system-ui, sans-serif",
@@ -426,6 +440,10 @@ export class ArenaScene extends Phaser.Scene {
 
     if (Phaser.Input.Keyboard.JustDown(this.pickupKey)) {
       this.gameSocket.send({ type: "pickup_intent" });
+    }
+
+    if (Phaser.Input.Keyboard.JustDown(this.switchKey)) {
+      this.gameSocket.send({ type: "switch_weapon" });
     }
 
     if (
@@ -550,6 +568,7 @@ export class ArenaScene extends Phaser.Scene {
       if (playerState.id === this.localPlayerId) {
         this.localPlayer = player;
         this.localWeapon = playerState.weapon;
+        this.localAmmoInMag = playerState.ammo_in_mag;
         this.localPlayerIsAlive = playerState.alive;
         this.localPlayerIsReloading = playerState.reload_progress > 0;
         if (this.localPlayerIsReloading) {
@@ -698,8 +717,13 @@ export class ArenaScene extends Phaser.Scene {
       const hpHudValue = playerState.alive
         ? shieldStatus || `${playerState.hp}`
         : `RESPAWN ${Math.ceil(playerState.respawn_ends_in_seconds)}s`;
+      const switchHint = playerState.gun_weapon === null
+        ? ""
+        : playerState.weapon === playerState.gun_weapon
+          ? `\nG: switch to ${WEAPON_LABELS[playerState.melee_weapon]}`
+          : `\nG: switch to ${WEAPON_LABELS[playerState.gun_weapon]}`;
       this.ammoHud.setText(
-        `Weapon: ${WEAPON_LABELS[playerState.weapon]}\nAmmo: ${ammoHudValue}\nHP: ${hpHudValue}${reloadStatus}`,
+        `Weapon: ${WEAPON_LABELS[playerState.weapon]}\nAmmo: ${ammoHudValue}\nHP: ${hpHudValue}${reloadStatus}${switchHint}`,
       );
     }
   }
@@ -1088,7 +1112,7 @@ export class ArenaScene extends Phaser.Scene {
       return;
     }
 
-    if (this.localWeapon === "knife") {
+    if (this.localWeapon === "fists" || this.localWeapon === "knife") {
       this.gameSocket.send({
         type: "melee_intent",
         direction_x: directionX,
@@ -1103,7 +1127,11 @@ export class ArenaScene extends Phaser.Scene {
       direction_y: directionY,
     });
     if (this.localWeapon === "pistol" || this.localWeapon === "rifle") {
-      soundscape.playShot(this.localWeapon);
+      if (this.localAmmoInMag > 0) {
+        soundscape.playShot(this.localWeapon);
+      } else {
+        soundscape.playEmptyClick();
+      }
     }
   }
 
@@ -1118,8 +1146,10 @@ export class ArenaScene extends Phaser.Scene {
     if (mobileAction) {
       if (mobileAction === "pickup") {
         this.gameSocket.send({ type: "pickup_intent" });
-      } else {
+      } else if (mobileAction === "reload") {
         this.gameSocket.send({ type: "reload_intent" });
+      } else {
+        this.gameSocket.send({ type: "switch_weapon" });
       }
       return;
     }
@@ -1206,9 +1236,10 @@ export class ArenaScene extends Phaser.Scene {
     this.drawMobileControls();
   }
 
-  private getMobileAction(pointer: Phaser.Input.Pointer): "pickup" | "reload" | null {
+  private getMobileAction(pointer: Phaser.Input.Pointer): "switch" | "pickup" | "reload" | null {
     const withinButton = (x: number) =>
       Phaser.Math.Distance.Between(pointer.x, pointer.y, x, MOBILE_ACTION_Y) <= 52;
+    if (withinButton(MOBILE_SWITCH_X)) return "switch";
     if (withinButton(MOBILE_PICKUP_X)) return "pickup";
     if (withinButton(MOBILE_RELOAD_X)) return "reload";
     return null;
@@ -1242,7 +1273,7 @@ export class ArenaScene extends Phaser.Scene {
       25,
     );
 
-    for (const x of [MOBILE_PICKUP_X, MOBILE_RELOAD_X]) {
+    for (const x of [MOBILE_SWITCH_X, MOBILE_PICKUP_X, MOBILE_RELOAD_X]) {
       this.mobileControls.fillStyle(0x111a27, 0.78);
       this.mobileControls.fillCircle(x, MOBILE_ACTION_Y, 51);
       this.mobileControls.lineStyle(3, 0xf5c55b, 0.85);

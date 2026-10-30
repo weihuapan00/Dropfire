@@ -48,6 +48,24 @@ export class Soundscape {
     oscillator.stop(now + (weapon === "rifle" ? 0.14 : 0.1));
   }
 
+  playEmptyClick(): void {
+    const context = this.getContext();
+    if (!context || context.state !== "running") return;
+
+    const now = context.currentTime;
+    for (const delay of [0, 0.04]) {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "square";
+      oscillator.frequency.setValueAtTime(180, now + delay);
+      gain.gain.setValueAtTime(0.02, now + delay);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.03);
+      oscillator.connect(gain).connect(context.destination);
+      oscillator.start(now + delay);
+      oscillator.stop(now + delay + 0.03);
+    }
+  }
+
   private getContext(): AudioContext | null {
     if (this.context) return this.context;
     const AudioContextConstructor = window.AudioContext

@@ -45,7 +45,7 @@ from .rules import (
     advance_respawns,
     advance_round,
     apply_move_intent,
-    attack_with_knife,
+    attack_with_melee,
     collect_weapon_pickup,
     fire_weapon,
     get_melee_progress,
@@ -57,6 +57,7 @@ from .rules import (
     request_match_start,
     reset_test_round,
     reset_weapon_pickups,
+    switch_weapon,
 )
 from .state import (
     active_connections,
@@ -133,6 +134,8 @@ async def broadcast_world_state() -> None:
                 "x": player["x"],
                 "y": player["y"],
                 "weapon": player["weapon"],
+                "melee_weapon": player["melee_weapon"],
+                "gun_weapon": player["gun_weapon"],
                 "ammo_in_mag": player["ammo_in_mag"],
                 "magazine_capacity": player["magazine_capacity"],
                 "reload_progress": get_reload_progress(player, now),
@@ -255,6 +258,8 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
                 "melee_ends_at": None,
                 "melee_angle": 0.0,
                 "weapon": DEFAULT_WEAPON,
+                "melee_weapon": DEFAULT_WEAPON,
+                "gun_weapon": None,
                 "ammo_in_mag": 0,
                 "magazine_capacity": 0,
                 "reload_ends_at": None,
@@ -310,7 +315,12 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
                 continue
 
             if message.get("type") == "melee_intent":
-                attack_with_knife(players[player_id], message)
+                attack_with_melee(players[player_id], message)
+                continue
+
+            if message.get("type") == "switch_weapon":
+                if switch_weapon(players[player_id]):
+                    await broadcast_world_state()
                 continue
 
             if message.get("type") == "reload_intent":
