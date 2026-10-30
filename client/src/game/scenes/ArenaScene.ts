@@ -1,11 +1,19 @@
 import Phaser from "phaser";
 
 import { GameSocket } from "../../network/GameSocket";
+import { soundscape } from "../../audio/Soundscape";
 
 const PLAYER_RADIUS = 20;
 const BULLET_RADIUS = 4;
 const WORLD_WIDTH = 2560;
 const WORLD_HEIGHT = 1440;
+const PLAYER_SPEED = 280;
+const ARENA_MIN_X = 72;
+const ARENA_MAX_X = 2488;
+const ARENA_MIN_Y = 72;
+const ARENA_MAX_Y = 1368;
+const RECONCILE_SNAP_DISTANCE = 100;
+const RECONCILE_STATIONARY_LERP = 0.18;
 const INTERPOLATION_AT_60_FPS = 0.2;
 const BULLET_INTERPOLATION_AT_60_FPS = 0.55;
 const AUTOMATIC_FIRE_INTENT_INTERVAL_MS = 120;
@@ -200,6 +208,8 @@ export class ArenaScene extends Phaser.Scene {
   private readonly pickups = new Map<string, Phaser.GameObjects.Container>();
   private readonly bullets = new Map<string, Phaser.GameObjects.Arc>();
   private readonly bulletRenderTargets = new Map<string, Phaser.Math.Vector2>();
+  private readonly coverRects: Array<{ x: number; y: number; width: number; height: number }> = [];
+  private readonly currentMoveDirection = new Phaser.Math.Vector2();
   private localPlayerId: string | null = null;
   private localPlayer: Phaser.GameObjects.Arc | null = null;
   private localWeapon: WeaponType = "fists";
@@ -405,6 +415,7 @@ export class ArenaScene extends Phaser.Scene {
 
     if (!this.localPlayer || !this.localPlayerIsAlive || this.roundPhase !== "active") {
       this.automaticFireIsHeld = false;
+      this.currentMoveDirection.set(0, 0);
       this.aimLine.clear();
       return;
     }
@@ -446,6 +457,7 @@ export class ArenaScene extends Phaser.Scene {
     }
 
     const direction = this.touchMovePointerId === null ? keyboardDirection : this.touchMoveDirection;
+    this.currentMoveDirection.copy(direction);
 
     if (
       direction.x !== this.lastSentMoveDirection.x ||
@@ -459,6 +471,7 @@ export class ArenaScene extends Phaser.Scene {
       this.lastSentMoveDirection.copy(direction);
     }
 
+    this.applyPredictedMovement(direction, delta);
     this.drawAimLine();
   }
 
@@ -703,12 +716,84 @@ export class ArenaScene extends Phaser.Scene {
         continue;
       }
 
+      if (playerId === this.localPlayerId) {
+        this.reconcileLocalPlayer(player, target, delta);
+        this.weaponLabels.get(playerId)?.setPosition(player.x, player.y - 54);
+        this.drawReloadIndicator(playerId, player);
+        this.drawMeleeIndicator(playerId, player);
+        continue;
+      }
+
       player.x = Phaser.Math.Linear(player.x, target.x, interpolationFactor);
       player.y = Phaser.Math.Linear(player.y, target.y, interpolationFactor);
       this.weaponLabels.get(playerId)?.setPosition(player.x, player.y - 54);
       this.drawReloadIndicator(playerId, player);
       this.drawMeleeIndicator(playerId, player);
     }
+  }
+
+  private reconcileLocalPlayer(
+    player: Phaser.GameObjects.Arc,
+    target: Phaser.Math.Vector2,
+    delta: number,
+  ): void {
+    const offsetX = target.x - player.x;
+    const offsetY = target.y - player.y;
+    const error = Math.hypot(offsetX, offsetY);
+
+    if (error > RECONCILE_SNAP_DISTANCE) {
+      player.x = target.x;
+      player.y = target.y;
+      return;
+    }
+
+    if (this.currentMoveDirection.x === 0 && this.currentMoveDirection.y === 0) {
+      const factor = Math.min(1, RECONCILE_STATIONARY_LERP * (delta / (1000 / 60)));
+      player.x = Phaser.Math.Linear(player.x, target.x, factor);
+      player.y = Phaser.Math.Linear(player.y, target.y, factor);
+    }
+  }
+
+  private applyPredictedMovement(direction: Phaser.Math.Vector2, delta: number): void {
+    const player = this.localPlayer;
+    if (!player || (direction.x === 0 && direction.y === 0)) {
+      return;
+    }
+
+    const distance = PLAYER_SPEED * (delta / 1000);
+    const candidateX = Phaser.Math.Clamp(
+      player.x + direction.x * distance,
+      ARENA_MIN_X,
+      ARENA_MAX_X,
+    );
+    if (!this.positionHitsCover(candidateX, player.y, PLAYER_RADIUS)) {
+      player.x = candidateX;
+    }
+
+    const candidateY = Phaser.Math.Clamp(
+      player.y + direction.y * distance,
+      ARENA_MIN_Y,
+      ARENA_MAX_Y,
+    );
+    if (!this.positionHitsCover(player.x, candidateY, PLAYER_RADIUS)) {
+      player.y = candidateY;
+    }
+  }
+
+  private positionHitsCover(x: number, y: number, radius: number): boolean {
+    for (const cover of this.coverRects) {
+      const halfWidth = cover.width / 2;
+      const halfHeight = cover.height / 2;
+      if (
+        x >= cover.x - halfWidth - radius
+        && x <= cover.x + halfWidth + radius
+        && y >= cover.y - halfHeight - radius
+        && y <= cover.y + halfHeight + radius
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private drawReloadIndicator(playerId: string, player: Phaser.GameObjects.Arc): void {
@@ -808,6 +893,15 @@ export class ArenaScene extends Phaser.Scene {
 
   private syncCovers(serverCovers: CoverState[]): void {
     const currentCoverIds = new Set(serverCovers.map((cover) => cover.id));
+    this.coverRects.length = 0;
+    for (const coverState of serverCovers) {
+      this.coverRects.push({
+        x: coverState.x,
+        y: coverState.y,
+        width: coverState.width,
+        height: coverState.height,
+      });
+    }
 
     for (const coverState of serverCovers) {
       let cover = this.covers.get(coverState.id);
@@ -1008,9 +1102,13 @@ export class ArenaScene extends Phaser.Scene {
       direction_x: directionX,
       direction_y: directionY,
     });
+    if (this.localWeapon === "pistol" || this.localWeapon === "rifle") {
+      soundscape.playShot(this.localWeapon);
+    }
   }
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
+    soundscape.unlock();
     if (!this.isTouchPointer(pointer)) {
       this.startFiringAt(pointer);
       return;

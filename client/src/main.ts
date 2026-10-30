@@ -2,6 +2,7 @@ import "./style.css";
 
 import { createGame } from "./game/createGame";
 import { ConnectionState, GameSocket } from "./network/GameSocket";
+import { soundscape } from "./audio/Soundscape";
 
 const MAX_ROOM_PLAYERS = 8;
 
@@ -57,6 +58,7 @@ app.innerHTML = `
         <span class="status-dot"></span>
         <span id="server-status-text">Connecting to server</span>
       </div>
+      <button class="audio-toggle" id="audio-toggle" type="button" aria-pressed="true">♫ Music: On</button>
     </header>
 
     <section class="layout">
@@ -100,6 +102,7 @@ const roomCodeElement = document.querySelector<HTMLElement>("#room-code");
 const copyRoomCodeButton = document.querySelector<HTMLButtonElement>("#copy-room-code");
 const gameFrame = document.querySelector<HTMLElement>(".game-frame");
 const mobileFullscreenButton = document.querySelector<HTMLButtonElement>("#mobile-fullscreen");
+const audioToggleButton = document.querySelector<HTMLButtonElement>("#audio-toggle");
 const waitingRoomCode = document.querySelector<HTMLElement>("#waiting-room-code");
 const waitingPlayerCount = document.querySelector<HTMLElement>("#waiting-player-count");
 const waitingPlayerList = document.querySelector<HTMLUListElement>("#waiting-player-list");
@@ -121,6 +124,13 @@ interface WaitingRoundState {
 let localPlayerId: string | null = null;
 let currentRoomCode: string | null = null;
 let gameSocket: GameSocket | null = null;
+
+function renderMusicToggle(): void {
+  if (!audioToggleButton) return;
+  const enabled = soundscape.isMusicEnabled();
+  audioToggleButton.textContent = enabled ? "♫ Music: On" : "♫ Music: Off";
+  audioToggleButton.setAttribute("aria-pressed", String(enabled));
+}
 let arenaStarted = false;
 const LAST_ROOM_STORAGE_KEY = "dropfire-last-room-code";
 
@@ -311,6 +321,11 @@ copyRoomCodeButton?.addEventListener("click", async () => {
 mobileFullscreenButton?.addEventListener("click", () => {
   void enterMobileFullscreen();
 });
+audioToggleButton?.addEventListener("click", () => {
+  soundscape.toggleMusic();
+  renderMusicToggle();
+});
+renderMusicToggle();
 addAiBotButton?.addEventListener("click", () => gameSocket?.send({ type: "add_ai_bot" }));
 startMatchButton?.addEventListener("click", () => gameSocket?.send({ type: "start_match" }));
 void refreshRooms();
