@@ -23,7 +23,8 @@ const RELOAD_RING_RADIUS = 31;
 const MOBILE_JOYSTICK_X = 126;
 const MOBILE_JOYSTICK_Y = 592;
 const MOBILE_JOYSTICK_RADIUS = 70;
-const MOBILE_JOYSTICK_DEAD_ZONE = 0.16;
+const MOBILE_MOVE_DEAD_ZONE = 0.16;
+const MOBILE_AIM_DEAD_ZONE = 0.08;
 const MOBILE_AIM_JOYSTICK_X = 1154;
 const MOBILE_AIM_JOYSTICK_Y = 592;
 const MOBILE_SWITCH_X = 834;
@@ -288,6 +289,8 @@ export class ArenaScene extends Phaser.Scene {
   private readonly pointerWorldPosition = new Phaser.Math.Vector2();
   private readonly touchMoveDirection = new Phaser.Math.Vector2();
   private readonly touchAimDirection = new Phaser.Math.Vector2();
+  private readonly moveJoystickOrigin = new Phaser.Math.Vector2(MOBILE_JOYSTICK_X, MOBILE_JOYSTICK_Y);
+  private readonly aimJoystickOrigin = new Phaser.Math.Vector2(MOBILE_AIM_JOYSTICK_X, MOBILE_AIM_JOYSTICK_Y);
   private touchMovePointerId: number | null = null;
   private touchAimPointer: Phaser.Input.Pointer | null = null;
   private touchAimHasFired = false;
@@ -296,8 +299,12 @@ export class ArenaScene extends Phaser.Scene {
   private lastSwitchAvailable: boolean | null = null;
   private isTouchControlScheme = false;
   private mobileControls!: Phaser.GameObjects.Graphics;
+  private mobileSwitchLabel: Phaser.GameObjects.Text | null = null;
   private aimLine!: Phaser.GameObjects.Graphics;
-  private ammoHud!: Phaser.GameObjects.Text;
+  private meleeSlotHud!: Phaser.GameObjects.Text;
+  private gunSlotHud!: Phaser.GameObjects.Text;
+  private statusHud!: Phaser.GameObjects.Text;
+  private switchHintHud!: Phaser.GameObjects.Text;
   private roundHud!: Phaser.GameObjects.Text;
   private scoreboardHud!: Phaser.GameObjects.Text;
   private spectatorHud!: Phaser.GameObjects.Text;
@@ -336,14 +343,48 @@ export class ArenaScene extends Phaser.Scene {
     }
 
     this.aimLine = this.add.graphics();
-    this.ammoHud = this.add
-      .text(18, 18, "Weapon: FISTS\nAmmo: --\nHP: 100", {
+    this.meleeSlotHud = this.add
+      .text(18, 18, "MELEE  FISTS", {
+        backgroundColor: "#173d33",
+        color: "#8cffd2",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "14px",
+        fontStyle: "bold",
+        padding: { x: 8, y: 5 },
+        fixedWidth: 190,
+      })
+      .setScrollFactor(0)
+      .setDepth(100);
+    this.gunSlotHud = this.add
+      .text(18, 52, "GUN    EMPTY", {
+        backgroundColor: "#111a27",
+        color: "#5c6778",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "14px",
+        fontStyle: "bold",
+        padding: { x: 8, y: 5 },
+        fixedWidth: 190,
+      })
+      .setScrollFactor(0)
+      .setDepth(100);
+    this.statusHud = this.add
+      .text(18, 88, "HP: 100", {
         backgroundColor: "#111a27",
         color: "#f4f7fb",
         fontFamily: "system-ui, sans-serif",
-        fontSize: "16px",
+        fontSize: "15px",
         fontStyle: "bold",
-        padding: { x: 8, y: 6 },
+        padding: { x: 8, y: 5 },
+        fixedWidth: 190,
+      })
+      .setScrollFactor(0)
+      .setDepth(100);
+    this.switchHintHud = this.add
+      .text(18, 122, "Pick up a gun to unlock the ranged slot", {
+        color: "#96a3b6",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "12px",
+        fontStyle: "bold",
       })
       .setScrollFactor(0)
       .setDepth(100);
@@ -360,7 +401,7 @@ export class ArenaScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(100);
     this.scoreboardHud = this.add
-      .text(18, 110, "LEADERBOARD", {
+      .text(18, 150, "LEADERBOARD", {
         backgroundColor: "#111a27",
         color: "#f4f7fb",
         fontFamily: "system-ui, sans-serif",
@@ -457,7 +498,7 @@ export class ArenaScene extends Phaser.Scene {
 
     if (this.isTouchControlScheme) {
       this.mobileControls = this.add.graphics().setScrollFactor(0).setDepth(110);
-      this.add.text(MOBILE_SWITCH_X, MOBILE_ACTION_Y, "SWITCH", {
+      this.mobileSwitchLabel = this.add.text(MOBILE_SWITCH_X, MOBILE_ACTION_Y, "SWITCH", {
         color: "#f4f7fb",
         fontFamily: "system-ui, sans-serif",
         fontSize: "13px",
@@ -652,6 +693,10 @@ export class ArenaScene extends Phaser.Scene {
         this.localGunWeapon = playerState.gun_weapon;
         this.localAmmoInMag = playerState.ammo_in_mag;
         this.localPlayerIsAlive = playerState.alive;
+        if (localStorage.getItem("dropfire-weapon-tip-seen") !== "1") {
+          localStorage.setItem("dropfire-weapon-tip-seen", "1");
+          this.showWeaponTip();
+        }
         this.localPlayerIsReloading = playerState.reload_progress > 0;
         if (this.localPlayerIsReloading) {
           this.rangedFireIsHeld = false;
@@ -819,20 +864,40 @@ export class ArenaScene extends Phaser.Scene {
     const reloadStatus = isRanged && playerState.reload_progress > 0 ? "\nRELOADING" : "";
     label.setText(`${owner}${WEAPON_LABELS[playerState.weapon]}${ammo}\n${combatStatus}${reloadStatus}`);
     if (playerState.id === this.localPlayerId) {
-      const ammoHudValue = isRanged && playerState.magazine_capacity > 0
-        ? `${playerState.ammo_in_mag} / ${playerState.magazine_capacity}`
-        : "--";
+      const meleeActive = playerState.weapon === playerState.melee_weapon;
+      const gunActive = playerState.gun_weapon !== null && playerState.weapon === playerState.gun_weapon;
+      const gunAmmo = playerState.gun_weapon && playerState.magazine_capacity > 0
+        ? `  ${playerState.ammo_in_mag}/${playerState.magazine_capacity}`
+        : "";
+      this.meleeSlotHud.setText(`MELEE  ${WEAPON_LABELS[playerState.melee_weapon]}`);
+      this.meleeSlotHud.setBackgroundColor(meleeActive ? "#173d33" : "#111a27");
+      this.meleeSlotHud.setColor(meleeActive ? "#8cffd2" : "#7d8a9c");
+      this.gunSlotHud.setText(
+        playerState.gun_weapon
+          ? `GUN    ${WEAPON_LABELS[playerState.gun_weapon]}${gunAmmo}`
+          : "GUN    EMPTY",
+      );
+      this.gunSlotHud.setBackgroundColor(gunActive ? "#173d33" : "#111a27");
+      this.gunSlotHud.setColor(
+        gunActive ? "#8cffd2" : playerState.gun_weapon ? "#aab8c9" : "#5c6778",
+      );
       const hpHudValue = playerState.alive
         ? shieldStatus || `${playerState.hp}`
         : `RESPAWN ${Math.ceil(playerState.respawn_ends_in_seconds)}s`;
-      const switchHint = playerState.gun_weapon === null
-        ? ""
-        : playerState.weapon === playerState.gun_weapon
-          ? `\nG: switch to ${WEAPON_LABELS[playerState.melee_weapon]}`
-          : `\nG: switch to ${WEAPON_LABELS[playerState.gun_weapon]}`;
-      this.ammoHud.setText(
-        `Weapon: ${WEAPON_LABELS[playerState.weapon]}\nAmmo: ${ammoHudValue}\nHP: ${hpHudValue}${reloadStatus}${switchHint}`,
+      this.statusHud.setText(`HP: ${hpHudValue}${reloadStatus}`);
+      this.switchHintHud.setText(
+        playerState.gun_weapon
+          ? "G / SWITCH: swap weapons"
+          : "Pick up a gun to unlock the ranged slot",
       );
+      if (this.mobileSwitchLabel) {
+        const target = playerState.gun_weapon
+          ? playerState.weapon === playerState.gun_weapon
+            ? playerState.melee_weapon
+            : playerState.gun_weapon
+          : null;
+        this.mobileSwitchLabel.setText(target ? `→ ${WEAPON_LABELS[target]}` : "SWITCH");
+      }
     }
   }
 
@@ -1334,6 +1399,30 @@ export class ArenaScene extends Phaser.Scene {
     });
   }
 
+  private showWeaponTip(): void {
+    const tip = this.add.text(
+      this.cameras.main.width / 2,
+      this.cameras.main.height - 70,
+      "TWO WEAPON SLOTS\nMELEE + GUN · press G / SWITCH to swap\nPick up a gun to fill the GUN slot",
+      {
+        backgroundColor: "#0d1622",
+        color: "#dbe5f2",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "15px",
+        fontStyle: "bold",
+        align: "center",
+        padding: { x: 14, y: 10 },
+      },
+    ).setOrigin(0.5, 1).setScrollFactor(0).setDepth(200);
+    this.tweens.add({
+      targets: tip,
+      alpha: 0,
+      delay: 6500,
+      duration: 700,
+      onComplete: () => tip.destroy(),
+    });
+  }
+
   private addKillFeedEntry(attackerId: string, targetId: string): void {
     const killer = this.playerNames.get(attackerId) ?? attackerId.slice(0, 4);
     const victim = this.playerNames.get(targetId) ?? targetId.slice(0, 4);
@@ -1641,15 +1730,18 @@ export class ArenaScene extends Phaser.Scene {
 
     if (pointer.x < 640 && this.touchMovePointerId === null) {
       this.touchMovePointerId = pointer.id;
-      this.updateTouchMoveDirection(pointer);
+      this.setJoystickOrigin(this.moveJoystickOrigin, pointer);
+      this.touchMoveDirection.set(0, 0);
+      this.drawMobileControls();
       return;
     }
 
     if (this.touchAimPointer === null) {
       this.touchAimPointer = pointer;
       this.touchAimHasFired = false;
-      this.updateTouchAimDirection(pointer);
-      this.fireTouchAimIfReady();
+      this.setJoystickOrigin(this.aimJoystickOrigin, pointer);
+      this.touchAimDirection.set(0, 0);
+      this.drawMobileControls();
     }
   }
 
@@ -1672,12 +1764,16 @@ export class ArenaScene extends Phaser.Scene {
     if (pointer.id === this.touchMovePointerId) {
       this.touchMovePointerId = null;
       this.touchMoveDirection.set(0, 0);
+      this.moveJoystickOrigin.set(MOBILE_JOYSTICK_X, MOBILE_JOYSTICK_Y);
+      this.drawMobileControls();
     }
     if (pointer.id === this.touchAimPointer?.id) {
       this.touchAimPointer = null;
       this.touchAimDirection.set(0, 0);
       this.touchAimHasFired = false;
       this.rangedFireIsHeld = false;
+      this.aimJoystickOrigin.set(MOBILE_AIM_JOYSTICK_X, MOBILE_AIM_JOYSTICK_Y);
+      this.drawMobileControls();
     }
     if (!this.isTouchPointer(pointer)) {
       this.rangedFireIsHeld = false;
@@ -1704,13 +1800,24 @@ export class ArenaScene extends Phaser.Scene {
     }
   }
 
+  private setJoystickOrigin(origin: Phaser.Math.Vector2, pointer: Phaser.Input.Pointer): void {
+    const margin = MOBILE_JOYSTICK_RADIUS + 8;
+    origin.set(
+      Phaser.Math.Clamp(pointer.x, margin, this.scale.width - margin),
+      Phaser.Math.Clamp(pointer.y, margin, this.scale.height - margin),
+    );
+  }
+
   private updateTouchMoveDirection(pointer: Phaser.Input.Pointer): void {
-    this.touchMoveDirection.set(pointer.x - MOBILE_JOYSTICK_X, pointer.y - MOBILE_JOYSTICK_Y);
+    this.touchMoveDirection.set(
+      pointer.x - this.moveJoystickOrigin.x,
+      pointer.y - this.moveJoystickOrigin.y,
+    );
     const length = this.touchMoveDirection.length();
     if (length > MOBILE_JOYSTICK_RADIUS) {
       this.touchMoveDirection.setLength(MOBILE_JOYSTICK_RADIUS);
     }
-    if (length < MOBILE_JOYSTICK_RADIUS * MOBILE_JOYSTICK_DEAD_ZONE) {
+    if (length < MOBILE_JOYSTICK_RADIUS * MOBILE_MOVE_DEAD_ZONE) {
       this.touchMoveDirection.set(0, 0);
     } else {
       this.touchMoveDirection.normalize();
@@ -1719,12 +1826,15 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private updateTouchAimDirection(pointer: Phaser.Input.Pointer): void {
-    this.touchAimDirection.set(pointer.x - MOBILE_AIM_JOYSTICK_X, pointer.y - MOBILE_AIM_JOYSTICK_Y);
+    this.touchAimDirection.set(
+      pointer.x - this.aimJoystickOrigin.x,
+      pointer.y - this.aimJoystickOrigin.y,
+    );
     const length = this.touchAimDirection.length();
     if (length > MOBILE_JOYSTICK_RADIUS) {
       this.touchAimDirection.setLength(MOBILE_JOYSTICK_RADIUS);
     }
-    if (length < MOBILE_JOYSTICK_RADIUS * MOBILE_JOYSTICK_DEAD_ZONE) {
+    if (length < MOBILE_JOYSTICK_RADIUS * MOBILE_AIM_DEAD_ZONE) {
       this.touchAimDirection.set(0, 0);
     } else {
       this.touchAimDirection.normalize();
@@ -1747,25 +1857,30 @@ export class ArenaScene extends Phaser.Scene {
 
   private drawMobileControls(): void {
     this.mobileControls.clear();
+    const moveX = this.touchMovePointerId === null ? MOBILE_JOYSTICK_X : this.moveJoystickOrigin.x;
+    const moveY = this.touchMovePointerId === null ? MOBILE_JOYSTICK_Y : this.moveJoystickOrigin.y;
+    const aimX = this.touchAimPointer === null ? MOBILE_AIM_JOYSTICK_X : this.aimJoystickOrigin.x;
+    const aimY = this.touchAimPointer === null ? MOBILE_AIM_JOYSTICK_Y : this.aimJoystickOrigin.y;
+
     this.mobileControls.fillStyle(0x111a27, 0.62);
-    this.mobileControls.fillCircle(MOBILE_JOYSTICK_X, MOBILE_JOYSTICK_Y, MOBILE_JOYSTICK_RADIUS);
+    this.mobileControls.fillCircle(moveX, moveY, MOBILE_JOYSTICK_RADIUS);
     this.mobileControls.lineStyle(3, 0x7ed7ff, 0.75);
-    this.mobileControls.strokeCircle(MOBILE_JOYSTICK_X, MOBILE_JOYSTICK_Y, MOBILE_JOYSTICK_RADIUS);
+    this.mobileControls.strokeCircle(moveX, moveY, MOBILE_JOYSTICK_RADIUS);
     this.mobileControls.fillStyle(0x7ed7ff, 0.75);
     this.mobileControls.fillCircle(
-      MOBILE_JOYSTICK_X + this.touchMoveDirection.x * 38,
-      MOBILE_JOYSTICK_Y + this.touchMoveDirection.y * 38,
+      moveX + this.touchMoveDirection.x * 38,
+      moveY + this.touchMoveDirection.y * 38,
       25,
     );
 
     this.mobileControls.fillStyle(0x111a27, 0.62);
-    this.mobileControls.fillCircle(MOBILE_AIM_JOYSTICK_X, MOBILE_AIM_JOYSTICK_Y, MOBILE_JOYSTICK_RADIUS);
+    this.mobileControls.fillCircle(aimX, aimY, MOBILE_JOYSTICK_RADIUS);
     this.mobileControls.lineStyle(3, 0xf15d58, 0.8);
-    this.mobileControls.strokeCircle(MOBILE_AIM_JOYSTICK_X, MOBILE_AIM_JOYSTICK_Y, MOBILE_JOYSTICK_RADIUS);
+    this.mobileControls.strokeCircle(aimX, aimY, MOBILE_JOYSTICK_RADIUS);
     this.mobileControls.fillStyle(0xf15d58, 0.78);
     this.mobileControls.fillCircle(
-      MOBILE_AIM_JOYSTICK_X + this.touchAimDirection.x * 38,
-      MOBILE_AIM_JOYSTICK_Y + this.touchAimDirection.y * 38,
+      aimX + this.touchAimDirection.x * 38,
+      aimY + this.touchAimDirection.y * 38,
       25,
     );
 
