@@ -39,7 +39,7 @@ app.innerHTML = `
       <h2>How to play</h2>
       <p><strong>Desktop:</strong> WASD / arrows move · mouse aims and fires · E picks up · R reloads.</p>
       <p><strong>Mobile:</strong> left stick moves · right side aims and fires · use PICK and RELOAD buttons.</p>
-      <p>Matches last 3 minutes. Ranking uses kills, then total damage. Fists are always available; weapons must be found.</p>
+      <p>Matches last 3 minutes. Ranking uses kills, then total damage. Everyone starts with a knife; pistols and rifles must be found.</p>
     </section>
   </section>
   <main class="shell" id="game-shell" hidden>
@@ -67,7 +67,7 @@ app.innerHTML = `
 
       <aside class="panel">
         <h2>Find a weapon</h2>
-        <p>Everyone starts with fists. Stand near a knife, pistol, or rifle pickup and press E to equip it before another player does.</p>
+        <p>Everyone starts with a knife. Stand near a pistol or rifle pickup and press E to equip it before another player does.</p>
 
         <div class="key-grid" aria-label="WASD movement keys">
           <span class="key">W</span>

@@ -18,6 +18,7 @@ const MOBILE_AIM_JOYSTICK_Y = 592;
 const MOBILE_PICKUP_X = 1004;
 const MOBILE_RELOAD_X = 1174;
 const MOBILE_ACTION_Y = 462;
+const PICKUP_HINT_RADIUS = 42;
 const WEAPON_TYPES = ["fists", "knife", "pistol", "rifle"] as const;
 
 type WeaponType = (typeof WEAPON_TYPES)[number];
@@ -648,6 +649,9 @@ export class ArenaScene extends Phaser.Scene {
       return;
     }
 
+    if (this.spectatorTargetId === nextTargetId && !advance) {
+      return;
+    }
     this.spectatorTargetId = nextTargetId;
     this.cameras.main.startFollow(nextTarget, true, 0.14, 0.14);
     this.cameraIsFollowingLocalPlayer = false;
@@ -762,6 +766,8 @@ export class ArenaScene extends Phaser.Scene {
     for (const pickupState of serverPickups) {
       let pickup = this.pickups.get(pickupState.id);
       if (!pickup) {
+        const pickupRange = this.add.circle(0, 0, PICKUP_HINT_RADIUS);
+        pickupRange.setStrokeStyle(2, WEAPON_COLORS[pickupState.weapon], 0.34);
         const marker = this.add.triangle(
           0,
           0,
@@ -785,7 +791,7 @@ export class ArenaScene extends Phaser.Scene {
             padding: { x: 4, y: 2 },
           })
           .setOrigin(0.5);
-        pickup = this.add.container(pickupState.x, pickupState.y, [marker, label]);
+        pickup = this.add.container(pickupState.x, pickupState.y, [pickupRange, marker, label]);
         this.pickups.set(pickupState.id, pickup);
       }
 

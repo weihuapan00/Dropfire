@@ -3,7 +3,7 @@ from collections.abc import MutableMapping, MutableSequence
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from math import atan2, hypot, isfinite
-from random import uniform
+from random import shuffle, uniform
 from time import monotonic
 from typing import Any
 from uuid import uuid4
@@ -140,15 +140,41 @@ KNIFE_REACH = 88.0
 KNIFE_MINIMUM_DOT_PRODUCT = 0.45
 KNIFE_COOLDOWN_SECONDS = 0.65
 MELEE_ATTACK_DURATION_SECONDS = 0.18
+DEFAULT_WEAPON = "knife"
 INITIAL_WEAPON_PICKUPS = (
-    ("knife-1", "knife", 760.0, 400.0),
-    ("pistol-1", "pistol", 1850.0, 460.0),
-    ("rifle-1", "rifle", 1350.0, 1060.0),
+    # Eight mirrored pistols: every starting sector has one reachable first weapon.
+    ("pistol-1", "pistol", 600.0, 410.0),
+    ("pistol-2", "pistol", 1080.0, 430.0),
+    ("pistol-3", "pistol", 1480.0, 430.0),
+    ("pistol-4", "pistol", 1960.0, 410.0),
+    ("pistol-5", "pistol", 600.0, 1030.0),
+    ("pistol-6", "pistol", 1080.0, 1010.0),
+    ("pistol-7", "pistol", 1480.0, 1010.0),
+    ("pistol-8", "pistol", 1960.0, 1030.0),
+    # Strong rifles are deliberately central and exposed from both side lanes.
+    ("rifle-1", "rifle", 1140.0, 720.0),
+    ("rifle-2", "rifle", 1420.0, 720.0),
 )
 COVER_WALLS = (
-    {"id": "cover-center", "x": 1600.0, "y": 720.0, "width": 84.0, "height": 340.0},
-    {"id": "cover-west", "x": 720.0, "y": 920.0, "width": 320.0, "height": 64.0},
-    {"id": "cover-east", "x": 1840.0, "y": 840.0, "width": 320.0, "height": 64.0},
+    # Citadel Run: three routes (top, centre, bottom) with 180-degree symmetry.
+    {"id": "vault-north", "x": 1280.0, "y": 570.0, "width": 120.0, "height": 220.0},
+    {"id": "vault-south", "x": 1280.0, "y": 870.0, "width": 120.0, "height": 220.0},
+    {"id": "cover-north-west", "x": 760.0, "y": 500.0, "width": 280.0, "height": 72.0},
+    {"id": "cover-north-east", "x": 1800.0, "y": 500.0, "width": 280.0, "height": 72.0},
+    {"id": "cover-south-west", "x": 760.0, "y": 940.0, "width": 280.0, "height": 72.0},
+    {"id": "cover-south-east", "x": 1800.0, "y": 940.0, "width": 280.0, "height": 72.0},
+    {"id": "cover-west", "x": 430.0, "y": 720.0, "width": 72.0, "height": 240.0},
+    {"id": "cover-east", "x": 2130.0, "y": 720.0, "width": 72.0, "height": 240.0},
+)
+SPAWN_POINTS = (
+    (360.0, 260.0),
+    (1120.0, 250.0),
+    (1440.0, 250.0),
+    (2200.0, 260.0),
+    (360.0, 1180.0),
+    (1120.0, 1190.0),
+    (1440.0, 1190.0),
+    (2200.0, 1180.0),
 )
 
 
@@ -164,7 +190,9 @@ weapon_pickups = RoomList("weapon_pickups")
 PLAYER_SPEED = 280.0
 PLAYER_RADIUS = 20.0
 PLAYER_MAX_HP = 100
-PICKUP_RADIUS = 24.0
+# The player centre may be within this radius; including PLAYER_RADIUS gives a
+# forgiving 62px edge-to-centre pickup distance without allowing long-range looting.
+PICKUP_RADIUS = 42.0
 BULLET_RADIUS = 4.0
 TEST_BOT_MOVE_DISTANCE = 48.0
 ARENA_MIN_X = 72.0
@@ -582,7 +610,7 @@ async def game_loop() -> None:
                 advance_respawns(now)
                 advance_reloads(now)
                 advance_melee_attacks(now)
-                advance_fill_bot_ai()
+                advance_fill_bot_ai(now)
                 for player in players.values():
                     advance_player_movement(player, elapsed)
                 advance_bullets(elapsed)
@@ -628,14 +656,12 @@ def reset_round_world() -> None:
 
 
 def find_spawn_position(excluded_player_id: str, fallback_number: int) -> tuple[float, float]:
-    """Choose the safest random spawn: clear of walls and far from enemies."""
+    """Choose the safest of eight symmetric map spawn points."""
     safest_position: tuple[float, float] | None = None
     safest_distance = -1.0
-    for _ in range(40):
-        x = uniform(ARENA_MIN_X + PLAYER_RADIUS, ARENA_MAX_X - PLAYER_RADIUS)
-        y = uniform(ARENA_MIN_Y + PLAYER_RADIUS, ARENA_MAX_Y - PLAYER_RADIUS)
-        if position_hits_cover(x, y, PLAYER_RADIUS):
-            continue
+    candidate_spawns = list(SPAWN_POINTS)
+    shuffle(candidate_spawns)
+    for x, y in candidate_spawns:
         enemy_distances = [
             hypot(x - player["x"], y - player["y"])
             for player_id, player in players.items()
@@ -650,7 +676,7 @@ def find_spawn_position(excluded_player_id: str, fallback_number: int) -> tuple[
     # A crowded map may have no ideal location; the farthest valid candidate is still safest.
     if safest_position is not None:
         return safest_position
-    return 1120.0 + fallback_number * 75.0, 720.0
+    return SPAWN_POINTS[fallback_number % len(SPAWN_POINTS)]
 
 
 def respawn_player(player: dict[str, Any], player_number: int) -> None:
@@ -663,7 +689,7 @@ def respawn_player(player: dict[str, Any], player_number: int) -> None:
     player["melee_started_at"] = None
     player["melee_ends_at"] = None
     player["melee_angle"] = 0.0
-    player["weapon"] = "fists"
+    player["weapon"] = DEFAULT_WEAPON
     player["ammo_in_mag"] = 0
     player["magazine_capacity"] = 0
     player["reload_ends_at"] = None
@@ -692,6 +718,9 @@ def start_round(now: float) -> None:
     round_state["number"] += 1
     round_state["winner_id"] = None
     round_state["ends_at"] = now + MATCH_DURATION_SECONDS
+    for player in players.values():
+        if player["is_bot"] and player["owner_id"] is None:
+            player["engage_after"] = now + 3.0
 
 
 def reset_test_round() -> None:
@@ -747,7 +776,7 @@ def spawn_test_bot(owner_id: str) -> bool:
         "melee_started_at": None,
         "melee_ends_at": None,
         "melee_angle": 0.0,
-        "weapon": "fists",
+        "weapon": DEFAULT_WEAPON,
         "ammo_in_mag": 0,
         "magazine_capacity": 0,
         "reload_ends_at": None,
@@ -786,7 +815,7 @@ def respawn_test_bot(owner_id: str, message: dict[str, Any]) -> bool:
     bot["melee_started_at"] = None
     bot["melee_ends_at"] = None
     bot["melee_angle"] = 0.0
-    bot["weapon"] = "fists"
+    bot["weapon"] = DEFAULT_WEAPON
     bot["ammo_in_mag"] = 0
     bot["magazine_capacity"] = 0
     bot["reload_ends_at"] = None
@@ -813,7 +842,7 @@ def create_fill_bot() -> None:
         "melee_started_at": None,
         "melee_ends_at": None,
         "melee_angle": 0.0,
-        "weapon": "fists",
+        "weapon": DEFAULT_WEAPON,
         "ammo_in_mag": 0,
         "magazine_capacity": 0,
         "reload_ends_at": None,
@@ -950,7 +979,7 @@ def spread_bot_from_nearby_bots(bot: dict[str, Any]) -> None:
         bot["move_y"] = combined_y / combined_length
 
 
-def advance_fill_bot_ai() -> None:
+def advance_fill_bot_ai(now: float) -> None:
     """Run a small server-authoritative combat loop for automatic practice bots."""
     if not round_is_active():
         for bot in players.values():
@@ -961,6 +990,13 @@ def advance_fill_bot_ai() -> None:
 
     for bot in players.values():
         if not bot["is_bot"] or bot["owner_id"] is not None or not bot["alive"]:
+            continue
+
+        if now < float(bot.get("engage_after", 0.0)):
+            patrol_x = float(bot.get("patrol_x", bot["x"]))
+            patrol_y = float(bot.get("patrol_y", bot["y"]))
+            if set_bot_move_direction(bot, patrol_x, patrol_y) < 60:
+                choose_bot_patrol_destination(bot)
             continue
 
         targets = [
@@ -977,7 +1013,7 @@ def advance_fill_bot_ai() -> None:
 
         target = min(targets, key=lambda player: hypot(player["x"] - bot["x"], player["y"] - bot["y"]))
 
-        if bot["weapon"] == "fists":
+        if bot["weapon"] not in RANGED_WEAPON_SETTINGS:
             ranged_pickups = [pickup for pickup in weapon_pickups if pickup["weapon"] in RANGED_WEAPON_SETTINGS]
             pickup_choices = ranged_pickups or list(weapon_pickups)
             if pickup_choices:
@@ -1135,7 +1171,7 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
         "melee_started_at": None,
         "melee_ends_at": None,
         "melee_angle": 0.0,
-        "weapon": "fists",
+        "weapon": DEFAULT_WEAPON,
         "ammo_in_mag": 0,
         "magazine_capacity": 0,
         "reload_ends_at": None,
