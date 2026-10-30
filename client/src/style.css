@@ -121,6 +121,11 @@ body {
   color: #8cffd2;
 }
 
+.leave-button {
+  border-color: rgba(241, 93, 88, 0.55);
+  color: #ff9b96;
+}
+
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 270px;

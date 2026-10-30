@@ -215,6 +215,9 @@ async def game_loop() -> None:
             finally:
                 room_context.reset(token)
 
+        for code in [code for code, room in rooms.items() if room.get("should_close")]:
+            rooms.pop(code, None)
+
 
 @app.get("/api/health")
 async def health_check() -> dict[str, str]:

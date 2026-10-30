@@ -29,6 +29,7 @@ app.innerHTML = `
   </section>
   <section class="room-lobby" id="room-lobby" hidden>
     <div class="lobby-brand"><span class="brand-mark">DF</span><span>DROP<span>FIRE</span></span></div>
+    <button class="audio-toggle leave-button" id="leave-waiting-room" type="button">← Leave room</button>
     <p class="eyebrow">PRIVATE MATCH</p>
     <h1>Room <em id="waiting-room-code">------</em></h1>
     <p class="lobby-intro">Wait for real players, add up to three AI opponents, then start when you are ready.</p>
@@ -60,6 +61,7 @@ app.innerHTML = `
         <span id="server-status-text">Connecting to server</span>
       </div>
       <button class="audio-toggle" id="audio-toggle" type="button" aria-pressed="true">♫ Music: On</button>
+      <button class="audio-toggle leave-button" id="leave-room" type="button">← Leave</button>
     </header>
 
     <section class="layout">
@@ -105,6 +107,8 @@ const copyRoomCodeButton = document.querySelector<HTMLButtonElement>("#copy-room
 const gameFrame = document.querySelector<HTMLElement>(".game-frame");
 const mobileFullscreenButton = document.querySelector<HTMLButtonElement>("#mobile-fullscreen");
 const audioToggleButton = document.querySelector<HTMLButtonElement>("#audio-toggle");
+const leaveRoomButton = document.querySelector<HTMLButtonElement>("#leave-room");
+const leaveWaitingRoomButton = document.querySelector<HTMLButtonElement>("#leave-waiting-room");
 const waitingRoomCode = document.querySelector<HTMLElement>("#waiting-room-code");
 const waitingPlayerCount = document.querySelector<HTMLElement>("#waiting-player-count");
 const waitingPlayerList = document.querySelector<HTMLUListElement>("#waiting-player-list");
@@ -127,6 +131,7 @@ interface WaitingRoundState {
 let localPlayerId: string | null = null;
 let currentRoomCode: string | null = null;
 let gameSocket: GameSocket | null = null;
+let phaserGame: ReturnType<typeof createGame> | null = null;
 
 function renderMusicToggle(): void {
   if (!audioToggleButton) return;
@@ -251,7 +256,7 @@ function launchArena(): void {
   if (mobileFullscreenButton) mobileFullscreenButton.hidden = !mobileBattlefield;
   roomLobby?.setAttribute("hidden", "");
   gameShell?.removeAttribute("hidden");
-  createGame("game-root", gameSocket, localPlayerId);
+  phaserGame = createGame("game-root", gameSocket, localPlayerId);
   gameSocket.onStateChange(renderConnectionState);
 }
 
@@ -273,6 +278,16 @@ function enterRoom(roomCode: string): void {
     }
   });
   gameSocket.onMessage((message) => {
+    if (message.type === "room_not_found" || message.type === "room_full") {
+      if (lobbyMessage) {
+        lobbyMessage.textContent = message.type === "room_not_found"
+          ? "Room not found."
+          : "Room is full.";
+      }
+      returnToLobby();
+      return;
+    }
+
     if (message.type === "server_connected" && typeof message.player_id === "string") {
       localPlayerId = message.player_id;
       renderPlayerId(message.player_id);
@@ -292,6 +307,22 @@ function enterRoom(roomCode: string): void {
     }
   });
   gameSocket.connect();
+}
+
+function returnToLobby(): void {
+  gameSocket?.close();
+  gameSocket = null;
+  phaserGame?.destroy(true);
+  phaserGame = null;
+  arenaStarted = false;
+  currentRoomCode = null;
+  sessionStorage.removeItem(LAST_ROOM_STORAGE_KEY);
+  window.history.replaceState(null, "", window.location.pathname);
+  gameShell?.setAttribute("hidden", "");
+  roomLobby?.setAttribute("hidden", "");
+  lobby?.removeAttribute("hidden");
+  document.body.classList.remove("mobile-battlefield");
+  void refreshRooms();
 }
 
 async function refreshRooms(): Promise<void> {
@@ -334,6 +365,8 @@ audioToggleButton?.addEventListener("click", () => {
   soundscape.toggleMusic();
   renderMusicToggle();
 });
+leaveWaitingRoomButton?.addEventListener("click", returnToLobby);
+leaveRoomButton?.addEventListener("click", returnToLobby);
 renderMusicToggle();
 if (playerNameInput) {
   playerNameInput.value = localStorage.getItem(PLAYER_NAME_STORAGE_KEY) ?? "";

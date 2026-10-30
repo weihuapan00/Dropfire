@@ -107,6 +107,8 @@ def create_room() -> str:
         if code not in rooms:
             break
     rooms[code] = {
+        "code": code,
+        "should_close": False,
         "active_connections": [],
         "players": {},
         "bullets": [],

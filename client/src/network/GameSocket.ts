@@ -63,6 +63,16 @@ export class GameSocket {
     }
   }
 
+  close(): void {
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const socket = this.socket;
+    this.socket = null;
+    socket?.close();
+  }
+
   onStateChange(listener: ConnectionListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

@@ -335,6 +335,8 @@ def remove_expired_disconnections(now: float) -> None:
             )
         rebalance_fill_bots()
         advance_round(now)
+        if not any(not player["is_bot"] for player in players.values()):
+            current_room()["should_close"] = True
 
 
 def move_test_bot_to_pickup(owner_id: str, message: dict[str, Any]) -> bool:
