@@ -4,7 +4,7 @@ These functions read and mutate the room-scoped proxies from ``state``, so they
 must run inside a room context (set by the game loop or a WebSocket handler).
 """
 
-from math import atan2, hypot, isfinite
+from math import atan2, cos, hypot, isfinite, sin
 from random import shuffle
 from time import monotonic
 from typing import Any
@@ -18,6 +18,9 @@ from .config import (
     BULLET_RADIUS,
     COVER_WALLS,
     DEFAULT_WEAPON,
+    KNIFE_BLOCK_MINIMUM_DOT_PRODUCT,
+    KNIFE_BLOCK_REACH,
+    KNIFE_SPEED_MULTIPLIER,
     MAGAZINE_CAPACITIES,
     MATCH_DURATION_SECONDS,
     MELEE_WEAPON_SETTINGS,
@@ -76,7 +79,8 @@ def advance_player_movement(player: dict[str, Any], elapsed: float) -> bool:
     if not player["alive"] or (player["move_x"] == 0 and player["move_y"] == 0):
         return False
 
-    distance = PLAYER_SPEED * elapsed
+    speed = PLAYER_SPEED * (KNIFE_SPEED_MULTIPLIER if player["weapon"] == "knife" else 1.0)
+    distance = speed * elapsed
     previous_position = (player["x"], player["y"])
     candidate_x = max(ARENA_MIN_X, min(ARENA_MAX_X, player["x"] + player["move_x"] * distance))
     if not position_hits_cover(candidate_x, player["y"], PLAYER_RADIUS):
@@ -282,6 +286,7 @@ def apply_damage(player: dict[str, Any], damage: float, attacker_id: str, weapon
                     "x": player["x"],
                     "y": player["y"],
                     "killed": player["hp"] == 0,
+                    "blocked": False,
                 }
             )
     if player["hp"] == 0:
@@ -294,6 +299,54 @@ def apply_damage(player: dict[str, Any], damage: float, attacker_id: str, weapon
         if attacker is not None and attacker_id != player["id"]:
             attacker["kills"] += 1
     return True
+
+
+def melee_blocks_bullet(blocker: dict[str, Any], bullet: dict[str, Any]) -> bool:
+    """Return whether an active knife swing swats this bullet out of the air."""
+    if (
+        blocker["weapon"] != "knife"
+        or not blocker["alive"]
+        or not blocker["connected"]
+        or not round_is_active()
+    ):
+        return False
+
+    melee_ends_at = blocker["melee_ends_at"]
+    if melee_ends_at is None or monotonic() > melee_ends_at:
+        return False
+    if bullet["owner_id"] == blocker["id"]:
+        return False
+
+    offset_x = bullet["x"] - blocker["x"]
+    offset_y = bullet["y"] - blocker["y"]
+    distance = hypot(offset_x, offset_y)
+    if distance == 0 or distance > KNIFE_BLOCK_REACH:
+        return False
+
+    facing = blocker["melee_angle"]
+    dot_product = (offset_x * cos(facing) + offset_y * sin(facing)) / distance
+    return dot_product >= KNIFE_BLOCK_MINIMUM_DOT_PRODUCT
+
+
+def bullet_is_blocked(bullet: dict[str, Any]) -> bool:
+    """Return True when an enemy knife swing deflects the bullet."""
+    for blocker_id, blocker in players.items():
+        if blocker_id == bullet["owner_id"] or not melee_blocks_bullet(blocker, bullet):
+            continue
+        hit_events.append(
+            {
+                "attacker_id": bullet["owner_id"],
+                "target_id": blocker_id,
+                "damage": 0.0,
+                "weapon": "knife",
+                "x": bullet["x"],
+                "y": bullet["y"],
+                "killed": False,
+                "blocked": True,
+            }
+        )
+        return True
+    return False
 
 
 def advance_bullets(elapsed: float) -> None:
@@ -313,6 +366,10 @@ def advance_bullets(elapsed: float) -> None:
             continue
 
         if bullet_hits_cover(bullet):
+            bullets.remove(bullet)
+            continue
+
+        if bullet_is_blocked(bullet):
             bullets.remove(bullet)
             continue
 

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="blade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e8f6ff"/>
+      <stop offset="0.55" stop-color="#9fdcff"/>
+      <stop offset="1" stop-color="#4aa8e8"/>
+    </linearGradient>
+    <linearGradient id="grip" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b2b2e"/>
+      <stop offset="1" stop-color="#181216"/>
+    </linearGradient>
+  </defs>
+  <rect x="18" y="55" width="38" height="18" rx="6" fill="url(#grip)" stroke="#f15d58" stroke-width="3"/>
+  <rect x="52" y="47" width="10" height="34" rx="4" fill="#f15d58"/>
+  <path d="M62 49 L114 59 L62 79 Z" fill="url(#blade)" stroke="#dff4ff" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M66 63 L110 61" stroke="#ffffff" stroke-width="2" opacity="0.75"/>
+</svg>

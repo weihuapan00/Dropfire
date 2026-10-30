@@ -8,6 +8,7 @@ const BULLET_RADIUS = 4;
 const WORLD_WIDTH = 2560;
 const WORLD_HEIGHT = 1440;
 const PLAYER_SPEED = 280;
+const KNIFE_SPEED_MULTIPLIER = 1.15;
 const ARENA_MIN_X = 72;
 const ARENA_MAX_X = 2488;
 const ARENA_MIN_Y = 72;
@@ -45,6 +46,15 @@ const WEAPON_COLORS: Record<WeaponType, number> = {
   pistol: 0xf15d58,
   rifle: 0xf15d58,
 };
+
+const WEAPON_TEXTURES: Partial<Record<WeaponType, string>> = {
+  knife: "weapon-knife",
+  pistol: "weapon-pistol",
+  rifle: "weapon-rifle",
+};
+const PICKUP_WEAPON_SCALE = 0.42;
+const HELD_WEAPON_SCALE = 0.26;
+const HELD_WEAPON_OFFSET = 26;
 
 const FIRE_MODES: Record<WeaponType, "none" | "semi" | "automatic"> = {
   fists: "none",
@@ -103,6 +113,7 @@ interface HitEvent {
   x: number;
   y: number;
   killed: boolean;
+  blocked: boolean;
 }
 
 interface CoverState {
@@ -197,6 +208,7 @@ function isHitEvent(value: unknown): value is HitEvent {
     && typeof hit.x === "number"
     && typeof hit.y === "number"
     && typeof hit.killed === "boolean"
+    && typeof hit.blocked === "boolean"
   );
 }
 
@@ -232,6 +244,9 @@ function isRoundState(value: unknown): value is RoundState {
 export class ArenaScene extends Phaser.Scene {
   private readonly players = new Map<string, Phaser.GameObjects.Arc>();
   private readonly playerRenderTargets = new Map<string, Phaser.Math.Vector2>();
+  private readonly heldWeapons = new Map<string, Phaser.GameObjects.Image>();
+  private readonly facingAngles = new Map<string, number>();
+  private readonly lastPlayerPositions = new Map<string, Phaser.Math.Vector2>();
   private readonly weaponLabels = new Map<string, Phaser.GameObjects.Text>();
   private readonly reloadIndicators = new Map<string, Phaser.GameObjects.Graphics>();
   private readonly reloadProgress = new Map<string, number>();
@@ -294,6 +309,12 @@ export class ArenaScene extends Phaser.Scene {
   ) {
     super("arena");
     this.localPlayerId = initialLocalPlayerId;
+  }
+
+  preload(): void {
+    this.load.svg("weapon-knife", "/sprites/knife.svg", { width: 128, height: 128 });
+    this.load.svg("weapon-pistol", "/sprites/pistol.svg", { width: 128, height: 128 });
+    this.load.svg("weapon-rifle", "/sprites/rifle.svg", { width: 128, height: 128 });
   }
 
   create(): void {
@@ -614,6 +635,7 @@ export class ArenaScene extends Phaser.Scene {
       this.meleeAngles.set(playerState.id, playerState.melee_angle);
       this.playerNames.set(playerState.id, this.displayNameFor(playerState));
       this.playerAliveStates.set(playerState.id, playerState.alive);
+      this.syncHeldWeapon(playerState);
       if (playerState.id === this.localPlayerId) {
         this.localPlayer = player;
         this.localWeapon = playerState.weapon;
@@ -649,6 +671,10 @@ export class ArenaScene extends Phaser.Scene {
         player.destroy();
         this.players.delete(playerId);
         this.playerRenderTargets.delete(playerId);
+        this.heldWeapons.get(playerId)?.destroy();
+        this.heldWeapons.delete(playerId);
+        this.facingAngles.delete(playerId);
+        this.lastPlayerPositions.delete(playerId);
         this.weaponLabels.get(playerId)?.destroy();
         this.weaponLabels.delete(playerId);
         this.reloadIndicators.get(playerId)?.destroy();
@@ -810,6 +836,7 @@ export class ArenaScene extends Phaser.Scene {
         this.weaponLabels.get(playerId)?.setPosition(player.x, player.y - 54);
         this.drawReloadIndicator(playerId, player);
         this.drawMeleeIndicator(playerId, player);
+        this.updateHeldWeaponTransform(playerId, player);
         continue;
       }
 
@@ -818,6 +845,7 @@ export class ArenaScene extends Phaser.Scene {
       this.weaponLabels.get(playerId)?.setPosition(player.x, player.y - 54);
       this.drawReloadIndicator(playerId, player);
       this.drawMeleeIndicator(playerId, player);
+      this.updateHeldWeaponTransform(playerId, player);
     }
   }
 
@@ -843,13 +871,85 @@ export class ArenaScene extends Phaser.Scene {
     }
   }
 
+  private syncHeldWeapon(playerState: PlayerState): void {
+    const textureKey = WEAPON_TEXTURES[playerState.weapon];
+    let heldWeapon = this.heldWeapons.get(playerState.id);
+    if (!textureKey) {
+      heldWeapon?.setVisible(false);
+      return;
+    }
+
+    if (!heldWeapon) {
+      heldWeapon = this.add.image(playerState.x, playerState.y, textureKey).setDepth(1);
+      this.heldWeapons.set(playerState.id, heldWeapon);
+    }
+    heldWeapon.setTexture(textureKey);
+    heldWeapon.setScale(HELD_WEAPON_SCALE);
+    heldWeapon.setVisible(playerState.alive && playerState.connected);
+  }
+
+  private updateHeldWeaponTransform(playerId: string, player: Phaser.GameObjects.Arc): void {
+    const heldWeapon = this.heldWeapons.get(playerId);
+    if (!heldWeapon || !heldWeapon.visible) {
+      return;
+    }
+
+    const facing = this.updateFacingAngle(playerId, player);
+    heldWeapon.setPosition(
+      player.x + Math.cos(facing) * HELD_WEAPON_OFFSET,
+      player.y + Math.sin(facing) * HELD_WEAPON_OFFSET,
+    );
+    heldWeapon.setRotation(facing);
+  }
+
+  private updateFacingAngle(playerId: string, player: Phaser.GameObjects.Arc): number {
+    if (playerId === this.localPlayerId) {
+      const aimAngle = this.getAimAngle();
+      this.facingAngles.set(playerId, aimAngle);
+      return aimAngle;
+    }
+
+    const lastPosition = this.lastPlayerPositions.get(playerId);
+    if (lastPosition) {
+      const offsetX = player.x - lastPosition.x;
+      const offsetY = player.y - lastPosition.y;
+      if (Math.hypot(offsetX, offsetY) > 0.4) {
+        this.facingAngles.set(playerId, Math.atan2(offsetY, offsetX));
+      }
+      lastPosition.set(player.x, player.y);
+    } else {
+      this.lastPlayerPositions.set(playerId, new Phaser.Math.Vector2(player.x, player.y));
+    }
+    return this.facingAngles.get(playerId) ?? 0;
+  }
+
+  private getAimAngle(): number {
+    if (this.touchAimPointer && this.touchAimDirection.lengthSq() > 0) {
+      return Math.atan2(this.touchAimDirection.y, this.touchAimDirection.x);
+    }
+
+    const player = this.localPlayer;
+    if (!player) {
+      return 0;
+    }
+    const pointer = this.input.activePointer;
+    pointer.positionToCamera(this.cameras.main, this.pointerWorldPosition);
+    return Phaser.Math.Angle.Between(
+      player.x,
+      player.y,
+      this.pointerWorldPosition.x,
+      this.pointerWorldPosition.y,
+    );
+  }
+
   private applyPredictedMovement(direction: Phaser.Math.Vector2, delta: number): void {
     const player = this.localPlayer;
     if (!player || (direction.x === 0 && direction.y === 0)) {
       return;
     }
 
-    const distance = PLAYER_SPEED * (delta / 1000);
+    const speed = PLAYER_SPEED * (this.localWeapon === "knife" ? KNIFE_SPEED_MULTIPLIER : 1);
+    const distance = speed * (delta / 1000);
     const candidateX = Phaser.Math.Clamp(
       player.x + direction.x * distance,
       ARENA_MIN_X,
@@ -942,19 +1042,9 @@ export class ArenaScene extends Phaser.Scene {
       if (!pickup) {
         const pickupRange = this.add.circle(0, 0, PICKUP_HINT_RADIUS);
         pickupRange.setStrokeStyle(2, WEAPON_COLORS[pickupState.weapon], 0.34);
-        const marker = this.add.triangle(
-          0,
-          0,
-          0,
-          -28,
-          26,
-          22,
-          -26,
-          22,
-          WEAPON_COLORS[pickupState.weapon],
-          0.9,
-        );
-        marker.setStrokeStyle(3, 0xffffff, 0.7);
+        const marker = this.add
+          .image(0, 0, WEAPON_TEXTURES[pickupState.weapon] ?? "weapon-knife")
+          .setScale(PICKUP_WEAPON_SCALE);
         const label = this.add
           .text(0, 40, WEAPON_LABELS[pickupState.weapon], {
             backgroundColor: "#111a27",
@@ -1082,6 +1172,15 @@ export class ArenaScene extends Phaser.Scene {
 
   private syncHits(hits: HitEvent[]): void {
     for (const hit of hits) {
+      if (hit.blocked) {
+        this.spawnHitSpark(hit.x, hit.y);
+        this.spawnBlockLabel(hit.x, hit.y);
+        if (hit.target_id === this.localPlayerId) {
+          soundscape.playBlock();
+        }
+        continue;
+      }
+
       this.spawnHitSpark(hit.x, hit.y);
       this.spawnDamageNumber(hit.x, hit.y, hit.damage);
 
@@ -1125,6 +1224,22 @@ export class ArenaScene extends Phaser.Scene {
       y: y - 84,
       alpha: 0,
       duration: 650,
+      onComplete: () => label.destroy(),
+    });
+  }
+
+  private spawnBlockLabel(x: number, y: number): void {
+    const label = this.add.text(x, y - 34, "BLOCK", {
+      fontFamily: "system-ui, sans-serif",
+      fontSize: "16px",
+      fontStyle: "bold",
+      color: "#9fdcff",
+    }).setOrigin(0.5).setDepth(31);
+    this.tweens.add({
+      targets: label,
+      y: y - 74,
+      alpha: 0,
+      duration: 520,
       onComplete: () => label.destroy(),
     });
   }
@@ -1228,18 +1343,7 @@ export class ArenaScene extends Phaser.Scene {
       return;
     }
 
-    const angle = this.touchAimPointer && this.touchAimDirection.lengthSq() > 0
-      ? Math.atan2(this.touchAimDirection.y, this.touchAimDirection.x)
-      : (() => {
-          const pointer = this.input.activePointer;
-          pointer.positionToCamera(this.cameras.main, this.pointerWorldPosition);
-          return Phaser.Math.Angle.Between(
-            player.x,
-            player.y,
-            this.pointerWorldPosition.x,
-            this.pointerWorldPosition.y,
-          );
-        })();
+    const angle = this.getAimAngle();
     const endX = player.x + Math.cos(angle) * 54;
     const endY = player.y + Math.sin(angle) * 54;
 

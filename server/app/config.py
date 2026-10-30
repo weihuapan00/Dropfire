@@ -82,6 +82,10 @@ SPAWN_POINTS = (
 )
 
 PLAYER_SPEED = 280.0
+KNIFE_SPEED_MULTIPLIER = 1.15
+KNIFE_BLOCK_REACH = 104.0
+# cos(90°) = 0: block anything in the front half-plane; lower values widen past 90°.
+KNIFE_BLOCK_MINIMUM_DOT_PRODUCT = 0.0
 PLAYER_RADIUS = 20.0
 PLAYER_MAX_HP = 100
 # The player centre may be within this radius; including PLAYER_RADIUS gives a

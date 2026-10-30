@@ -135,6 +135,10 @@ body {
   background: rgba(5, 8, 14, 0.78);
 }
 
+.match-end-overlay[hidden] {
+  display: none;
+}
+
 .match-end-card {
   width: min(92vw, 440px);
   border: 1px solid rgba(91, 242, 189, 0.35);

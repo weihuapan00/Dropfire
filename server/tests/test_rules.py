@@ -1,10 +1,13 @@
 """Unit tests for the server-authoritative combat and round rules."""
 
+from math import cos, radians, sin
 from time import monotonic
 
 import pytest
 
 from app.rules import (
+    advance_bullets,
+    advance_player_movement,
     advance_round,
     apply_damage,
     apply_move_intent,
@@ -270,3 +273,114 @@ def test_request_match_start_requires_host(room):
 
     room["round_state"]["start_requested"] = False
     assert request_match_start("guest") is False
+
+
+def test_knife_grants_faster_movement(room):
+    activate_round(room)
+    knife_player = make_player("knife", weapon="knife", move_x=1.0, move_y=0.0)
+    fists_player = make_player("fists", weapon="fists", move_x=1.0, move_y=0.0)
+    room["players"]["knife"] = knife_player
+    room["players"]["fists"] = fists_player
+
+    advance_player_movement(knife_player, 1.0)
+    advance_player_movement(fists_player, 1.0)
+
+    assert knife_player["x"] - fists_player["x"] == pytest.approx(280.0 * 0.15)
+
+
+def test_knife_swing_blocks_enemy_bullet(room):
+    activate_round(room)
+    blocker = make_player(
+        "blocker",
+        weapon="knife",
+        melee_weapon="knife",
+        melee_ends_at=monotonic() + 0.18,
+        melee_angle=0.0,
+    )
+    target = make_player("target", x=1340.0)
+    room["players"]["blocker"] = blocker
+    room["players"]["target"] = target
+    bullets.append(
+        {
+            "id": "bullet-1",
+            "owner_id": "shooter",
+            "weapon": "pistol",
+            "damage": 25.0,
+            "x": 1320.0,
+            "y": 720.0,
+            "velocity_x": 0.0,
+            "velocity_y": 0.0,
+            "remaining_seconds": 1.0,
+        }
+    )
+
+    advance_bullets(0.0)
+
+    assert len(bullets) == 0
+    assert target["hp"] == 100
+    assert any(event["blocked"] for event in hit_events)
+
+
+def test_knife_swing_does_not_block_bullet_behind(room):
+    activate_round(room)
+    blocker = make_player(
+        "blocker",
+        weapon="knife",
+        melee_weapon="knife",
+        melee_ends_at=monotonic() + 0.18,
+        melee_angle=0.0,
+    )
+    target = make_player("target", x=1220.0)
+    room["players"]["blocker"] = blocker
+    room["players"]["target"] = target
+    bullets.append(
+        {
+            "id": "bullet-2",
+            "owner_id": "shooter",
+            "weapon": "pistol",
+            "damage": 25.0,
+            "x": 1240.0,
+            "y": 720.0,
+            "velocity_x": 0.0,
+            "velocity_y": 0.0,
+            "remaining_seconds": 1.0,
+        }
+    )
+
+    advance_bullets(0.0)
+
+    assert len(bullets) == 0
+    assert target["hp"] == 75
+    assert not any(event["blocked"] for event in hit_events)
+
+
+def test_knife_block_cone_accepts_wide_front_angle(room):
+    activate_round(room)
+    blocker = make_player(
+        "blocker",
+        x=1000.0,
+        weapon="knife",
+        melee_weapon="knife",
+        melee_ends_at=monotonic() + 0.18,
+        melee_angle=0.0,
+    )
+    room["players"]["blocker"] = blocker
+    angle = radians(85)
+    bullets.append(
+        {
+            "id": "bullet-wide",
+            "owner_id": "shooter",
+            "weapon": "pistol",
+            "damage": 25.0,
+            "x": 1000.0 + 60.0 * cos(angle),
+            "y": 720.0 + 60.0 * sin(angle),
+            "velocity_x": 0.0,
+            "velocity_y": 0.0,
+            "remaining_seconds": 1.0,
+        }
+    )
+
+    advance_bullets(0.0)
+
+    assert len(bullets) == 0
+    assert any(event["blocked"] for event in hit_events)

@@ -94,7 +94,7 @@ app.innerHTML = `
         <ol id="match-end-top" class="match-end-top"></ol>
         <p id="match-end-your-stats" class="match-end-stats"></p>
         <p id="match-end-countdown" class="match-end-countdown"></p>
-        <button class="test-button primary-action" id="match-end-next" type="button">再来一局 →</button>
+        <button class="test-button primary-action" id="match-end-next" type="button">Play again →</button>
       </div>
     </div>
   </main>
@@ -300,18 +300,18 @@ function renderMatchEnd(players: MatchResultPlayer[], round: WaitingRoundState):
   if (matchEndYourStats) {
     const rank = ranked.findIndex((player) => player.id === localPlayerId) + 1;
     matchEndYourStats.textContent = local
-      ? `你的战绩：第 ${rank} 名 · ${local.kills} 击杀 · ${Math.round(local.damage_dealt)} 伤害`
-      : "你的战绩：已离线";
+      ? `Your stats: #${rank} · ${local.kills} kills · ${Math.round(local.damage_dealt)} damage`
+      : "Your stats: offline";
   }
 
   if (matchEndCountdown) {
-    matchEndCountdown.textContent = `下一局 ${Math.ceil(round.ends_in_seconds)}s 后自动开始`;
+    matchEndCountdown.textContent = `Next round in ${Math.ceil(round.ends_in_seconds)}s`;
   }
 
   if (matchEndNextButton) {
     const isHost = local?.is_host ?? false;
     matchEndNextButton.disabled = !isHost;
-    matchEndNextButton.textContent = isHost ? "再来一局 →" : "等待房主开始…";
+    matchEndNextButton.textContent = isHost ? "Play again →" : "Waiting for host…";
   }
 
   matchEndOverlay.hidden = false;

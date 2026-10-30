@@ -100,6 +100,24 @@ export class Soundscape {
     oscillator.stop(now + 0.14);
   }
 
+  playBlock(): void {
+    const context = this.getContext();
+    if (!context || context.state !== "running") return;
+
+    const now = context.currentTime;
+    for (const [offset, frequency] of [[0, 1400], [0.03, 2100]] as const) {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "triangle";
+      oscillator.frequency.setValueAtTime(frequency, now + offset);
+      gain.gain.setValueAtTime(0.02, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.08);
+      oscillator.connect(gain).connect(context.destination);
+      oscillator.start(now + offset);
+      oscillator.stop(now + offset + 0.08);
+    }
+  }
+
   private getContext(): AudioContext | null {
     if (this.context) return this.context;
     const AudioContextConstructor = window.AudioContext
