@@ -18,6 +18,9 @@ from app.rules import (
     collect_pickup,
     collect_weapon_pickup,
     fire_weapon,
+    equip_progression_weapon,
+    respawn_player,
+    start_round,
     request_match_start,
     switch_weapon,
 )
@@ -159,74 +162,72 @@ def test_fire_weapon_respects_cooldown(room):
     assert player["ammo_in_mag"] == 11
 
 
-def test_collect_weapon_pickup_equips_and_removes_pickup(room):
+def test_ground_weapon_cannot_skip_stage(room):
     activate_round(room)
-    player = make_player("p1", x=600.0, y=410.0)
-    room["players"]["p1"] = player
-    pickup_ids_before = {pickup["id"] for pickup in weapon_pickups}
-
-    collected = collect_weapon_pickup(player)
-
-    assert collected is True
+    player = make_player("p1")
+    equip_progression_weapon(player)
+    weapon_pickups.append({"id": "cheat", "weapon": "knife", "x": player["x"], "y": player["y"]})
+    assert collect_weapon_pickup(player) is False
     assert player["weapon"] == "pistol"
-    assert player["gun_weapon"] == "pistol"
-    assert player["ammo_in_mag"] == 12
-    assert player["magazine_capacity"] == 12
-    assert "pistol-1" in pickup_ids_before
-    assert "pistol-1" not in {pickup["id"] for pickup in weapon_pickups}
+    assert player["weapon_level"] == 0
 
 
-def test_collect_knife_upgrades_melee_slot(room):
+@pytest.mark.parametrize("is_bot", [False, True])
+def test_gun_game_progression_respawn_and_victory(room, is_bot):
     activate_round(room)
-    player = make_player("p1", x=1080.0, y=430.0)
-    room["players"]["p1"] = player
+    attacker = make_player("attacker", is_bot=is_bot)
+    target = make_player("target")
+    room["players"].update(attacker=attacker, target=target)
+    equip_progression_weapon(attacker)
+    assert attacker["weapon"] == "pistol"
+    for weapon, next_weapon in [("pistol", "shotgun"), ("shotgun", "rifle"), ("rifle", "sniper"), ("sniper", "knife")]:
+        target.update(alive=True, hp=100, invulnerable_until=0.0)
+        assert apply_damage(target, 100, "attacker", weapon)
+        assert attacker["weapon"] == next_weapon
+        level = attacker["weapon_level"]
+        attacker.update(alive=False, hp=0)
+        respawn_player(attacker, 0)
+        assert attacker["weapon_level"] == level
+        assert attacker["weapon"] == next_weapon
+        assert attacker["ammo_in_mag"] == attacker["magazine_capacity"]
+        assert room["round_state"]["phase"] == "active"
+    target.update(alive=True, hp=100, invulnerable_until=0.0)
+    apply_damage(target, 100, "attacker", "knife")
+    assert room["round_state"]["winner_id"] == "attacker"
+    assert room["round_state"]["phase"] == "ending"
+    target.update(alive=True, hp=100)
+    assert not apply_damage(target, 100, "attacker", "knife")
+    assert attacker["kills"] == 5
+    room["round_state"]["ends_at"] = monotonic() - 1
+    advance_round(monotonic())
+    assert room["round_state"]["phase"] == "active"
+    assert attacker["weapon"] == "pistol"
+    assert attacker["weapon_level"] == attacker["kills"] == 0
 
-    collected = collect_weapon_pickup(player)
 
-    assert collected is True
-    assert player["weapon"] == "knife"
-    assert player["melee_weapon"] == "knife"
-    assert player["gun_weapon"] is None
-    assert "knife-1" not in {pickup["id"] for pickup in weapon_pickups}
-
-
-def test_switch_weapon_toggles_between_gun_and_melee(room):
+def test_switch_cannot_bypass_progression(room):
     activate_round(room)
-    player = make_player(
-        "p1",
-        weapon="pistol",
-        melee_weapon="knife",
-        gun_weapon="pistol",
-        ammo_in_mag=12,
-        magazine_capacity=12,
-    )
-    room["players"]["p1"] = player
-
-    assert switch_weapon(player) is True
-    assert player["weapon"] == "knife"
-
-    assert switch_weapon(player) is True
+    player = make_player("p1")
+    equip_progression_weapon(player)
+    assert not switch_weapon(player)
     assert player["weapon"] == "pistol"
 
 
-def test_switch_to_melee_cancels_reload_but_keeps_ammo(room):
+def test_old_stage_projectile_cannot_skip_level_or_win(room):
     activate_round(room)
-    player = make_player(
-        "p1",
-        weapon="pistol",
-        melee_weapon="knife",
-        gun_weapon="pistol",
-        ammo_in_mag=4,
-        magazine_capacity=12,
-        reload_ends_at=monotonic() + 1.0,
-    )
-    room["players"]["p1"] = player
-
-    assert switch_weapon(player) is True
-    assert player["weapon"] == "knife"
-    assert player["reload_ends_at"] is None
-    assert player["ammo_in_mag"] == 4
-    assert player["gun_weapon"] == "pistol"
+    attacker = make_player("attacker", weapon_level=1)
+    target = make_player("target")
+    room["players"].update(attacker=attacker, target=target)
+    equip_progression_weapon(attacker)
+    apply_damage(target, 100, "attacker", "pistol")
+    assert attacker["kills"] == 1
+    assert attacker["weapon_level"] == 1
+    attacker["weapon_level"] = 2
+    equip_progression_weapon(attacker)
+    target.update(hp=100, alive=True)
+    apply_damage(target, 100, "attacker", "rifle")
+    assert room["round_state"]["phase"] == "active"
+    assert room["round_state"]["winner_id"] is None
 
 
 def test_melee_damage_differs_by_weapon(room):
@@ -298,27 +299,15 @@ def test_advance_round_starts_when_requested(room):
 
     assert room["round_state"]["phase"] == "active"
     assert room["round_state"]["number"] == 1
-    assert isinstance(room["round_state"]["ends_at"], float)
+    assert room["round_state"]["ends_at"] is None
 
 
-def test_round_enters_ending_then_restarts(room):
-    room["round_state"]["phase"] = "active"
-    room["round_state"]["number"] = 1
+def test_round_does_not_end_by_timer_or_kill_count(room):
+    activate_round(room)
     room["round_state"]["ends_at"] = monotonic() - 1.0
-    room["players"]["winner"] = make_player("winner", kills=3, damage_dealt=120.0)
-    room["players"]["loser"] = make_player("loser", kills=1, damage_dealt=40.0)
-
+    room["players"]["leader"] = make_player("leader", kills=99)
     advance_round(monotonic())
-
-    assert room["round_state"]["phase"] == "ending"
-    assert room["round_state"]["winner_id"] == "winner"
-    assert room["round_state"]["ends_at"] > monotonic()
-
-    room["round_state"]["ends_at"] = monotonic() - 1.0
-    advance_round(monotonic())
-
     assert room["round_state"]["phase"] == "active"
-    assert room["round_state"]["number"] == 2
     assert room["round_state"]["winner_id"] is None
 
 
@@ -475,13 +464,14 @@ def test_medkit_stays_when_player_is_full_hp(room):
     assert "health-1" in {pickup["id"] for pickup in health_pickups}
 
 
-def test_collect_pickup_falls_back_to_weapon(room):
-    activate_round(room)
-    player = make_player("p1", x=600.0, y=410.0, hp=100)
-    room["players"]["p1"] = player
-
-    assert collect_pickup(player) is True
-    assert player["weapon"] == "pistol"
+def test_gun_game_only_spawns_medkits(room):
+    start_round(monotonic())
+    assert not weapon_pickups
+    for _ in range(20):
+        room["next_pickup_spawn_at"] = 0
+        advance_pickup_spawner(monotonic())
+    assert not weapon_pickups
+    assert len(health_pickups) <= MAX_HEALTH_PICKUPS
 
 
 def test_pickup_spawner_adds_a_pickup_when_due(room):
@@ -516,3 +506,35 @@ def test_pickup_spawner_respects_caps(room):
     assert len(health_pickups) <= MAX_HEALTH_PICKUPS
     assert sum(pickup["weapon"] == "rifle" for pickup in weapon_pickups) <= MAX_RIFLE_PICKUPS
     assert sum(pickup["weapon"] == "knife" for pickup in weapon_pickups) <= MAX_KNIFE_PICKUPS
+
+
+def test_bot_spawns_armed_and_knife_stage_attacks_instead_of_seeking_guns(room):
+    from app.bots import create_fill_bot, advance_fill_bot_ai
+    activate_round(room)
+    create_fill_bot()
+    bot = next(iter(room["players"].values()))
+    assert bot["weapon"] == "pistol"
+    assert bot["ammo_in_mag"] == 12
+    bot.update(weapon_level=4, x=1280.0, y=720.0)
+    equip_progression_weapon(bot)
+    target = make_player("target", x=1330.0, y=720.0)
+    room["players"]["target"] = target
+    weapon_pickups.append({"id": "bait", "weapon": "rifle", "x": 600.0, "y": 410.0})
+    advance_fill_bot_ai(monotonic())
+    assert not target["alive"]
+    assert room["round_state"]["winner_id"] == bot["id"]
+
+
+@pytest.mark.parametrize("weapon,count,ammo", [("shotgun", 6, 5), ("sniper", 1, 3)])
+def test_new_guns_fire_once_and_enforce_cooldown(room, weapon, count, ammo):
+    activate_round(room)
+    player = make_player("shooter", weapon=weapon, ammo_in_mag=ammo, last_fire_at=0)
+    room["players"]["shooter"] = player
+    assert fire_weapon(player, {"direction_x": 1, "direction_y": 0})
+    assert len(bullets) == count
+    assert player["ammo_in_mag"] == ammo - 1
+    assert not fire_weapon(player, {"direction_x": 1, "direction_y": 0})
+    assert len(bullets) == count
+    if weapon == "shotgun":
+        assert min(b["velocity_y"] for b in bullets) < 0
+        assert max(b["velocity_y"] for b in bullets) > 0

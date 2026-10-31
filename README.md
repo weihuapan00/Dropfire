@@ -2,24 +2,25 @@
 
 A browser-based, real-time 2D arena shooter for 2–8 players. Create a
 room, share its six-character code, add AI opponents if needed, then compete
-for the most kills before the three-minute match ends.
+to finish the Gun Game weapon progression first.
 
 ## Play online
 
 **[Play Dropfire →](https://dropfire.wpdatasoft.com/)**
 
 The live game is served from an Oracle-hosted production server. Pushes to
-`main` run the GitHub Actions checks and then deploy the client and FastAPI
-server automatically.
+`main` run GitHub Actions checks. Production deployment is triggered manually
+from the **Deploy** workflow.
 
 ## Gameplay
 
 - Create or join a room with a six-character code. Rooms are publicly listed
   in the lobby; the code is a shortcut for joining, not an access restriction.
 - The host can add AI bots and start once at least two players are present.
-- Every player starts with fists. Find knives, pistols, rifles, and medkits
-  around the arena. Carry one melee weapon and one gun, and switch between them.
-- A match lasts three minutes; kills rank first, then total damage breaks ties.
+- Humans and bots start with pistols: pistol → shotgun → rifle → sniper → knife.
+  Each stage kill advances your weapon; the final knife kill wins. Death preserves the current weapon stage.
+- No match timer or ground weapons; medkits still spawn. Old-stage bullets
+  can score kills but cannot skip the next stage.
 - The server owns movement, combat, pickups, respawns, round state, and bot
   behaviour, so every connected player sees the same shared world.
 
@@ -27,8 +28,8 @@ server automatically.
 
 | Platform | Controls |
 | --- | --- |
-| Desktop | `WASD` / arrow keys to move; mouse to aim and fire; `E` to pick up; `R` to reload; `G` to switch weapon |
-| Mobile | Left stick to move; right stick to aim and fire; on-screen **SWITCH**, **PICK**, and **RELOAD** buttons |
+| Desktop | `WASD` / arrow keys to move; mouse to aim and fire; `E` to pick up; `R` to reload |
+| Mobile | Left stick to move; right stick to aim and fire; on-screen **PICK** (medkits) and **RELOAD** buttons |
 
 ## Architecture
 
@@ -110,7 +111,11 @@ Development-only WebSocket commands are disabled by default. For local debugging
 start the server with `DROPFIRE_ENABLE_DEBUG_COMMANDS=1`; even then, only the room
 host can run them. Leave this unset on the public server.
 
-The workflow in [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
-runs client type checks/builds and server tests for pull requests. A successful
-push to `main` deploys to the production Oracle host, builds the Vite client,
-restarts the FastAPI service, and checks `/api/health` before reporting success.
+[CI](.github/workflows/ci.yml) runs client checks/builds and server tests on
+pushes and pull requests to `main`. Pushes do not deploy the game.
+
+To publish an update, open **GitHub → Actions → Deploy → Run workflow**, select
+`main`, then click **Run workflow**. The [Deploy](.github/workflows/deploy.yml)
+workflow reruns CI and, if successful, deploys that exact commit to Oracle,
+builds the client, restarts FastAPI, and checks `/api/health`. Deployments from
+other branches are skipped. Deployment uses the existing production secrets.

@@ -27,6 +27,9 @@ import sys
 ports = [8000] if sys.argv[1] == "true" else [8000, 5173]
 for port in ports:
     with socket.socket() as probe:
+        # Match server restart semantics: closed connections may remain in TIME_WAIT.
+        # This still rejects an existing listening server.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind(("0.0.0.0", port))
         except OSError:

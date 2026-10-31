@@ -17,7 +17,7 @@ LOBBY_BROADCAST_INTERVAL_SECONDS = 0.2
 BOT_PREFERRED_RANGES = {"knife": 70.0, "pistol": 330.0, "rifle": 500.0}
 BOT_FIRE_RANGES = {"pistol": 500.0, "rifle": 900.0}
 
-WEAPON_TYPES = {"fists", "knife", "pistol", "rifle"}
+WEAPON_TYPES = {"fists", "knife", "pistol", "rifle", "shotgun", "sniper"}
 RANGED_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
     "pistol": {
         "damage": 25.0,
@@ -32,7 +32,13 @@ RANGED_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
         "cooldown_seconds": 0.16,
     },
 }
-MAGAZINE_CAPACITIES = {"pistol": 12, "rifle": 20}
+RANGED_WEAPON_SETTINGS.update({
+    "shotgun": {"damage": 18.0, "bullet_speed": 800.0, "bullet_lifetime_seconds": 0.4, "cooldown_seconds": 0.85},
+    "sniper": {"damage": 70.0, "bullet_speed": 1600.0, "bullet_lifetime_seconds": 1.0, "cooldown_seconds": 1.2},
+})
+BOT_PREFERRED_RANGES.update({"shotgun": 160.0, "sniper": 700.0})
+BOT_FIRE_RANGES.update({"shotgun": 300.0, "sniper": 1400.0})
+MAGAZINE_CAPACITIES = {"pistol": 12, "rifle": 20, "shotgun": 5, "sniper": 3}
 RELOAD_DURATION_SECONDS = 1.2
 
 MELEE_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
@@ -53,6 +59,7 @@ MELEE_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
     },
 }
 
+GUN_GAME_WEAPONS = ("pistol", "shotgun", "rifle", "sniper", "knife")
 DEFAULT_WEAPON = "fists"
 INITIAL_WEAPON_PICKUPS = (
     # Four outer pistols and four scarce one-shot knives, plus two central rifles.

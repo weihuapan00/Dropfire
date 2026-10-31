@@ -40,11 +40,11 @@ app.innerHTML = `
     <p id="waiting-message" class="waiting-message">Connecting to room…</p>
     <section class="lobby-rules">
       <h2>How to play</h2>
-      <p><strong>Desktop:</strong> WASD / arrows move · mouse aims and fires · E picks up · R reloads · G switches weapon.</p>
-      <p><strong>Mobile:</strong> left stick moves · right stick aims and holds to fire · use SWITCH / PICK / RELOAD buttons.</p>
-      <p><strong>Two weapon slots:</strong> MELEE (fists or knife) and GUN (pistol or rifle). Press G / SWITCH to swap; pick up a gun to fill the empty GUN slot.</p>
+      <p><strong>Desktop:</strong> WASD / arrows move · mouse aims and fires · E picks up · R reloads.</p>
+      <p><strong>Mobile:</strong> left stick moves · right stick aims and holds to fire · use PICK for medkits and RELOAD for ammo.</p>
+      <p><strong>Weapon progression:</strong> Weapons change automatically after a stage kill. Ground pickups cannot skip stages.</p>
       <p><strong>Phone tip:</strong> tap <em>Fullscreen</em>, or add Dropfire to your home screen to launch without browser tabs.</p>
-      <p>Matches last 3 minutes. Ranking uses kills, then total damage. Everyone starts with fists; scarce one-shot knives, pistols, and rifles must be found.</p>
+      <p>Each kill with your current stage weapon advances you: pistol → shotgun → rifle → sniper → knife. Win with a knife kill. Respawns keep your weapon level; bots follow the same rules.</p>
     </section>
   </section>
   <main class="shell" id="game-shell" hidden>
@@ -53,7 +53,7 @@ app.innerHTML = `
         <div class="brand-mark">DF</div>
         <div>
           <h1>Dropfire</h1>
-          <p>3 minutes. Most kills wins.</p>
+          <p>GUN GAME · Pistol → Rifle → Knife</p>
           <p class="player-id" id="player-id">You: waiting for player ID</p>
           <p class="player-id">Room: <span id="room-code"></span> <button id="copy-room-code" type="button">Copy room code</button></p>
         </div>
@@ -74,8 +74,8 @@ app.innerHTML = `
       </div>
 
       <aside class="panel">
-        <h2>Find a weapon</h2>
-        <p>Everyone starts with fists. Stand near a knife, pistol, or rifle pickup and press E to equip it before another player does.</p>
+        <h2>Upgrade through kills</h2>
+        <p>Everyone starts with a pistol. Earn a kill at each stage: pistol → shotgun → rifle → sniper → knife.</p>
 
         <div class="key-grid" aria-label="WASD movement keys">
           <span class="key">W</span>
@@ -86,7 +86,7 @@ app.innerHTML = `
 
         <div class="lesson">
           <h2>Fight for the lead</h2>
-          <p>Most kills wins; damage breaks ties. Press G to switch between your melee weapon and gun. Pick up a medkit when hurt, and use cover to avoid enemy fire.</p>
+          <p>Death keeps your current weapon stage. Pick up a medkit when hurt and use cover. The first final-stage knife kill wins.</p>
         </div>
       </aside>
     </section>
@@ -156,6 +156,7 @@ interface MatchResultPlayer {
   name: string | null;
   is_bot: boolean;
   kills: number;
+  weapon_level: number;
   damage_dealt: number;
   is_host: boolean;
 }
@@ -253,6 +254,7 @@ function isMatchResultPlayer(value: unknown): value is MatchResultPlayer {
     && (typeof player.name === "string" || player.name === null)
     && typeof player.is_bot === "boolean"
     && typeof player.kills === "number"
+    && typeof player.weapon_level === "number"
     && typeof player.damage_dealt === "number"
     && typeof player.is_host === "boolean"
   );
@@ -295,7 +297,9 @@ function renderMatchEnd(players: MatchResultPlayer[], round: WaitingRoundState):
   if (!matchEndOverlay) return;
 
   const ranked = [...players].sort(
-    (left, right) => right.kills - left.kills || right.damage_dealt - left.damage_dealt,
+    (left, right) => Number(right.id === round.winner_id) - Number(left.id === round.winner_id)
+      || right.weapon_level - left.weapon_level || right.kills - left.kills
+      || right.damage_dealt - left.damage_dealt,
   );
 
   const winner = round.winner_id

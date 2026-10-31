@@ -21,9 +21,8 @@ def player_in(snapshot, player_id):
     return next(player for player in snapshot["players"] if player["id"] == player_id)
 
 
-def test_two_players_receive_map_and_share_exclusive_pickup(monkeypatch):
-    # Place both players within reach of the same initial pistol. All joining,
-    # host checks, match start, pickup, and broadcast logic remain real.
+def test_two_players_receive_map_and_same_stage_weapons(monkeypatch):
+    # Join two clients and verify identical starting gear and ignored weapon pickups.
     monkeypatch.setattr(rules, "find_spawn_position", lambda _id, number: (600 + number * 15, 410))
     with TestClient(app) as client:
         response = client.post("/api/rooms")
@@ -44,7 +43,9 @@ def test_two_players_receive_map_and_share_exclusive_pickup(monkeypatch):
                             message["type"] == "world_state" and message["round"]["phase"] == "active"
                         ))
                         assert len(snapshot["players"]) == 2
-                        assert all(player["weapon"] == "fists" for player in snapshot["players"])
+                        assert snapshot["pickups"] == []
+                        assert all(p["weapon_level"] == 0 for p in snapshot["players"])
+                        assert all(player["weapon"] == "pistol" for player in snapshot["players"])
 
                     host.send_json({"type": "pickup_intent"})
                     for socket in (host, guest):
@@ -53,18 +54,18 @@ def test_two_players_receive_map_and_share_exclusive_pickup(monkeypatch):
                             and player_in(message, host_id)["weapon"] == "pistol"
                         ))
                         assert "pistol-1" not in {pickup["id"] for pickup in snapshot["pickups"]}
-                        assert player_in(snapshot, guest_id)["weapon"] == "fists"
+                        assert player_in(snapshot, guest_id)["weapon"] == "pistol"
 
-                    # A second player cannot acquire the already-consumed gun.
+                    # Pickup commands cannot change the second player's progression weapon.
                     guest.send_json({"type": "pickup_intent"})
                     guest.send_json({"type": "ping", "client_sent_at": "after-pickup"})
                     receive_until(guest, lambda message: message["type"] == "pong")
                     # The pong establishes command ordering, while an outbound
                     # snapshot may still predate the command. Check committed
                     # server state as well so a stale snapshot cannot hide a bug.
-                    assert state.rooms[code]["players"][guest_id]["weapon"] == "fists"
+                    assert state.rooms[code]["players"][guest_id]["weapon"] == "pistol"
                     snapshot = receive_until(guest, lambda message: message["type"] == "world_state")
-                    assert player_in(snapshot, guest_id)["weapon"] == "fists"
+                    assert player_in(snapshot, guest_id)["weapon"] == "pistol"
                     assert player_in(snapshot, host_id)["weapon"] == "pistol"
         finally:
             state.rooms.pop(code, None)

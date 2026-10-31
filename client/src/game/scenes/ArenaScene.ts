@@ -31,7 +31,9 @@ const AUTOMATIC_FIRE_INTENT_INTERVAL_MS = 120;
 const PISTOL_FIRE_INTENT_INTERVAL_MS = 360;
 const RELOAD_RING_RADIUS = 31;
 const PICKUP_HINT_RADIUS = 42;
-const WEAPON_TYPES = ["fists", "knife", "pistol", "rifle"] as const;
+const WEAPON_TYPES = ["fists", "knife", "pistol", "rifle", "shotgun", "sniper"] as const;
+
+const STAGES = ["pistol", "shotgun", "rifle", "sniper", "knife"];
 
 type WeaponType = (typeof WEAPON_TYPES)[number];
 
@@ -40,6 +42,7 @@ const WEAPON_LABELS: Record<WeaponType, string> = {
   knife: "KNIFE",
   pistol: "PISTOL",
   rifle: "RIFLE",
+  shotgun: "SHOTGUN", sniper: "SNIPER",
 };
 
 const WEAPON_COLORS: Record<WeaponType, number> = {
@@ -47,12 +50,14 @@ const WEAPON_COLORS: Record<WeaponType, number> = {
   knife: 0xf15d58,
   pistol: 0xf15d58,
   rifle: 0xf15d58,
+  shotgun: 0xffaa55, sniper: 0xc4a0ff,
 };
 
 const WEAPON_TEXTURES: Partial<Record<WeaponType, string>> = {
   knife: "weapon-knife",
   pistol: "weapon-pistol",
   rifle: "weapon-rifle",
+  shotgun: "weapon-shotgun", sniper: "weapon-sniper",
 };
 const PICKUP_WEAPON_SCALE = 0.42;
 const HELD_WEAPON_SCALE = 0.26;
@@ -63,11 +68,13 @@ const FIRE_MODES: Record<WeaponType, "none" | "semi" | "automatic"> = {
   knife: "none",
   pistol: "semi",
   rifle: "automatic",
+  shotgun: "automatic", sniper: "automatic",
 };
 
-const BULLET_COLORS: Record<"pistol" | "rifle", number> = {
+const BULLET_COLORS: Record<"pistol" | "rifle" | "shotgun" | "sniper", number> = {
   pistol: 0xffd166,
   rifle: 0x7ed7ff,
+  shotgun: 0xffaa55, sniper: 0xc4a0ff,
 };
 
 interface PlayerState {
@@ -111,7 +118,7 @@ interface BulletState {
   id: string;
   x: number;
   y: number;
-  weapon: "pistol" | "rifle";
+  weapon: "pistol" | "rifle" | "shotgun" | "sniper";
 }
 
 interface HitEvent {
@@ -213,7 +220,7 @@ function isBulletState(value: unknown): value is BulletState {
     typeof bullet.id === "string" &&
     typeof bullet.x === "number" &&
     typeof bullet.y === "number" &&
-    (bullet.weapon === "pistol" || bullet.weapon === "rifle")
+    ((bullet.weapon === "pistol" || bullet.weapon === "rifle" || bullet.weapon === "shotgun" || bullet.weapon === "sniper"))
   );
 }
 
@@ -286,8 +293,9 @@ export class ArenaScene extends Phaser.Scene {
   private localPlayerId: string | null = null;
   private localPlayer: PlayerAvatar | null = null;
   private localWeapon: WeaponType = "fists";
-  private localGunWeapon: WeaponType | null = null;
   private localAmmoInMag = 0;
+  private lastCursorKey = "";
+  private readonly weaponCursors = new Map<string, string>();
   private lastLocalHp = 100;
   private lastRoundNumber = 0;
   private localPlayerIsAlive = true;
@@ -349,11 +357,18 @@ export class ArenaScene extends Phaser.Scene {
   preload(): void {
     this.load.svg("weapon-knife", "/sprites/knife.svg", { width: 128, height: 128 });
     this.load.svg("weapon-pistol", "/sprites/pistol.svg", { width: 128, height: 128 });
+    this.load.svg("weapon-shotgun", "/sprites/shotgun.svg", { width: 128, height: 128 });
+    this.load.svg("weapon-sniper", "/sprites/sniper.svg", { width: 128, height: 128 });
     this.load.svg("weapon-rifle", "/sprites/rifle.svg", { width: 128, height: 128 });
     this.load.svg("pickup-health", "/sprites/health.svg", { width: 128, height: 128 });
   }
 
   create(): void {
+    const previousCursor = this.game.canvas.style.cursor;
+    this.lastCursorKey = "";
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.game.canvas.style.cursor = previousCursor;
+    });
     this.drawArena();
     this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
     this.isTouchControlScheme = navigator.maxTouchPoints > 0;
@@ -399,7 +414,7 @@ export class ArenaScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(100);
     this.switchHintHud = this.add
-      .text(18, 122, "Pick up a gun to unlock the ranged slot", {
+      .text(18, 122, "Kills upgrade your weapon · death keeps your stage", {
         color: "#96a3b6",
         fontFamily: "system-ui, sans-serif",
         fontSize: "12px",
@@ -560,7 +575,7 @@ export class ArenaScene extends Phaser.Scene {
 
     if (this.isTouchControlScheme) {
       this.mobileControls = this.add.graphics().setScrollFactor(0).setDepth(110);
-      this.mobileSwitchLabel = this.add.text(MOBILE_SWITCH_X, MOBILE_ACTION_Y, "SWITCH", {
+      this.mobileSwitchLabel = this.add.text(MOBILE_SWITCH_X, MOBILE_ACTION_Y, "LOCKED", {
         color: "#f4f7fb",
         fontFamily: "system-ui, sans-serif",
         fontSize: "13px",
@@ -586,8 +601,8 @@ export class ArenaScene extends Phaser.Scene {
         640,
         680,
         this.isTouchControlScheme
-          ? "Left stick: move  •  Right stick: aim & hold to fire  •  SWITCH / PICK / RELOAD above it"
-          : "Move: WASD / arrows  •  E: pick up  •  R: reload  •  G: switch weapon  •  P: spectate next  •  Fists/Knife: click  •  Pistol: click  •  Rifle: hold left click",
+          ? "Left stick: move  •  Right stick: aim & hold to fire  •  PICK: medkit / RELOAD above it"
+          : "Move: WASD / arrows  •  E: medkit  •  R: reload  •  Kills: upgrade  •  P: spectate next  •  Fists/Knife: click  •  Pistol: click  •  Rifle: hold left click",
         {
         color: "#96a3b6",
         fontFamily: "system-ui, sans-serif",
@@ -600,6 +615,7 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   update(time: number, delta: number): void {
+    this.updateWeaponCursor();
     this.interpolatePlayers(delta);
     this.interpolateBullets(delta);
     this.updatePerformanceHud(time);
@@ -756,7 +772,6 @@ export class ArenaScene extends Phaser.Scene {
         const previousHp = this.lastLocalHp;
         this.localPlayer = player;
         this.localWeapon = playerState.weapon;
-        this.localGunWeapon = playerState.gun_weapon;
         this.localAmmoInMag = playerState.ammo_in_mag;
         this.localPlayerIsAlive = playerState.alive;
         this.lastLocalHp = playerState.hp;
@@ -839,10 +854,7 @@ export class ArenaScene extends Phaser.Scene {
     }
 
     if (round.phase === "active") {
-      const seconds = Math.ceil(round.ends_in_seconds);
-      const minutes = Math.floor(seconds / 60);
-      const remainingSeconds = String(seconds % 60).padStart(2, "0");
-      this.setRoundHudText(`DEATHMATCH ${round.number} · ${minutes}:${remainingSeconds}`);
+      this.setRoundHudText(`GUN GAME ${round.number} · PISTOL → RIFLE → KNIFE`);
       return;
     }
 
@@ -924,7 +936,7 @@ export class ArenaScene extends Phaser.Scene {
     const owner = playerState.id === this.localPlayerId
       ? "YOU · "
       : `${this.displayNameFor(playerState)} · `;
-    const isRanged = playerState.weapon === "pistol" || playerState.weapon === "rifle";
+    const isRanged = (playerState.weapon === "pistol" || playerState.weapon === "rifle" || playerState.weapon === "shotgun" || playerState.weapon === "sniper");
     const ammo = isRanged && playerState.magazine_capacity > 0
       ? ` · ${playerState.ammo_in_mag}/${playerState.magazine_capacity}`
       : "";
@@ -939,12 +951,12 @@ export class ArenaScene extends Phaser.Scene {
     const reloadStatus = isRanged && playerState.reload_progress > 0 ? "\nRELOADING" : "";
     label.setText(`${owner}${WEAPON_LABELS[playerState.weapon]}${ammo}\n${combatStatus}${reloadStatus}`);
     if (playerState.id === this.localPlayerId) {
-      const meleeActive = playerState.weapon === playerState.melee_weapon;
+      const meleeActive = playerState.alive;
       const gunActive = playerState.gun_weapon !== null && playerState.weapon === playerState.gun_weapon;
       const gunAmmo = playerState.gun_weapon && playerState.magazine_capacity > 0
         ? `  ${playerState.ammo_in_mag}/${playerState.magazine_capacity}`
         : "";
-      this.meleeSlotHud.setText(`MELEE  ${WEAPON_LABELS[playerState.melee_weapon]}`);
+      this.meleeSlotHud.setText(`STAGE ${(STAGES.indexOf(playerState.weapon) + 1) + "/" + STAGES.length}  ${WEAPON_LABELS[playerState.weapon]}`);
       const meleeStyle = meleeActive ? "active" : "inactive";
       if (meleeStyle !== this.lastMeleeSlotStyle) {
         this.lastMeleeSlotStyle = meleeStyle;
@@ -969,18 +981,11 @@ export class ArenaScene extends Phaser.Scene {
         : `RESPAWN ${Math.ceil(playerState.respawn_ends_in_seconds)}s`;
       this.statusHud.setText(`HP: ${hpHudValue}${reloadStatus}`);
       this.switchHintHud.setText(
-        playerState.gun_weapon
-          ? "G / SWITCH: swap weapons"
-          : "Pick up a gun to unlock the ranged slot",
+        playerState.weapon === "knife"
+          ? "FINAL STAGE · Knife kill wins!"
+          : `NEXT: ${STAGES[STAGES.indexOf(playerState.weapon) + 1]?.toUpperCase()} · One kill to upgrade`,
       );
-      if (this.mobileSwitchLabel) {
-        const target = playerState.gun_weapon
-          ? playerState.weapon === playerState.gun_weapon
-            ? playerState.melee_weapon
-            : playerState.gun_weapon
-          : null;
-        this.mobileSwitchLabel.setText(target ? `→ ${WEAPON_LABELS[target]}` : "SWITCH");
-      }
+      if (this.mobileSwitchLabel) this.mobileSwitchLabel.setText("LOCKED");
     }
   }
 
@@ -1117,8 +1122,41 @@ export class ArenaScene extends Phaser.Scene {
     return this.lastAimAngle;
   }
 
+  private updateWeaponCursor(): void {
+    const active = this.connectionReady && !this.inputSuspended && this.localPlayer
+      && this.localPlayerIsAlive && this.roundPhase === "active";
+    const disabled = this.localPlayerIsReloading || (this.isRangedWeapon() && this.localAmmoInMag === 0);
+    const key = active ? this.localWeapon + (disabled ? "-disabled" : "") : "default";
+    if (key === this.lastCursorKey) return;
+    this.lastCursorKey = key;
+    if (!active) {
+      this.game.canvas.style.cursor = "default";
+      return;
+    }
+    let cursor = this.weaponCursors.get(key);
+    if (!cursor) {
+      const color = disabled ? "#ffad66" : "#" + WEAPON_COLORS[this.localWeapon].toString(16).padStart(6, "0");
+      // SVG coordinates and the CSS hotspot share the same centre, so aiming stays exact.
+      const shapes: Record<WeaponType, string> = {
+        fists: '<circle cx="24" cy="24" r="9"/><path d="M20 24h8M24 20v8"/>',
+        knife: '<path d="M24 8L30 27L24 24L18 27ZM18 33h12M24 27v12"/>',
+        pistol: '<path d="M24 10v8M24 30v8M10 24h8M30 24h8"/><circle cx="24" cy="24" r="2"/>',
+        rifle: '<path d="M15 9H9v6M33 9h6v6M9 33v6h6M39 33v6h-6M24 16v5M24 27v5M16 24h5M27 24h5"/>',
+        shotgun: '<circle cx="24" cy="24" r="16"/><circle cx="24" cy="24" r="2"/><path d="M24 5v7M24 36v7M5 24h7M36 24h7"/>',
+        sniper: '<circle cx="24" cy="24" r="15"/><path d="M24 3v17M24 28v17M3 24h17M28 24h17"/><circle cx="24" cy="24" r="1"/>',
+      };
+      const shape = shapes[this.localWeapon];
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">'
+        + '<g fill="none" stroke="#07111f" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">' + shape + '</g>'
+        + '<g fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + shape + '</g></svg>';
+      cursor = 'url("data:image/svg+xml,' + encodeURIComponent(svg) + '") 24 24, crosshair';
+      this.weaponCursors.set(key, cursor);
+    }
+    this.game.canvas.style.cursor = cursor;
+  }
+
   private isRangedWeapon(): boolean {
-    return this.localWeapon === "pistol" || this.localWeapon === "rifle";
+    return (this.localWeapon === "pistol" || this.localWeapon === "rifle" || this.localWeapon === "shotgun" || this.localWeapon === "sniper");
   }
 
   private fireIntentInterval(): number {
@@ -1128,7 +1166,7 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private canSwitchWeapon(): boolean {
-    return this.isRangedWeapon() || this.localGunWeapon !== null;
+    return false;
   }
 
   private applyPredictedMovement(direction: { x: number; y: number }, delta: number): void {
@@ -1577,7 +1615,7 @@ export class ArenaScene extends Phaser.Scene {
     const tip = this.add.text(
       this.cameras.main.width / 2,
       this.cameras.main.height - 70,
-      "TWO WEAPON SLOTS\nMELEE + GUN · press G / SWITCH to swap\nPick up a gun to fill the GUN slot",
+      "GUN GAME\nPISTOL → RIFLE → KNIFE\nKnife kill wins · respawn keeps your stage",
       {
         backgroundColor: "#0d1622",
         color: "#dbe5f2",
@@ -1869,7 +1907,7 @@ export class ArenaScene extends Phaser.Scene {
       direction_x: directionX,
       direction_y: directionY,
     });
-    if (this.localWeapon === "pistol" || this.localWeapon === "rifle") {
+    if ((this.localWeapon === "pistol" || this.localWeapon === "rifle" || this.localWeapon === "shotgun" || this.localWeapon === "sniper")) {
       if (this.localAmmoInMag > 0) {
         soundscape.playShot(this.localWeapon);
       } else if (this.time.now - this.lastEmptyClickAt > 400) {

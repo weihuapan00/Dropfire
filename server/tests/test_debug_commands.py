@@ -71,7 +71,7 @@ def test_host_can_use_explicitly_enabled_development_commands(room, monkeypatch)
         host.send_json({"type": "debug_reset_weapon_pickups"})
         host.send_json({"type": "ping"})
         receive_type(host, "pong")
-        assert room["weapon_pickups"]
+        assert room["weapon_pickups"] == []
 
         room["players"][host_id]["kills"] = 3
         host.send_json({"type": "debug_reset_test_round"})

@@ -133,7 +133,7 @@ def create_room() -> str | None:
         "active_connections": [],
         "players": {},
         "bullets": [],
-        "weapon_pickups": create_initial_weapon_pickups(),
+        "weapon_pickups": [],
         "health_pickups": create_initial_health_pickups(),
         "hit_events": [],
         "next_pickup_spawn_at": 0.0,

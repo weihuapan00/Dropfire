@@ -16,15 +16,14 @@ from .config import (
     DEFAULT_WEAPON,
     MAX_PLAYERS,
     MELEE_WEAPON_SETTINGS,
-    PICKUP_RADIUS,
     PLAYER_MAX_HP,
     PLAYER_RADIUS,
-    RANGED_WEAPON_SETTINGS,
     SPAWN_PROTECTION_SECONDS,
     TEST_BOT_MOVE_DISTANCE,
 )
 from .rules import (
     advance_round,
+    equip_progression_weapon,
     attack_with_melee,
     collect_weapon_pickup,
     fire_weapon,
@@ -73,6 +72,7 @@ def spawn_test_bot(owner_id: str) -> bool:
         "is_bot": True,
         "owner_id": owner_id,
     }
+    equip_progression_weapon(players[bot_id])
     return True
 
 
@@ -106,6 +106,7 @@ def respawn_test_bot(owner_id: str, message: dict[str, Any]) -> bool:
     bot["respawn_at"] = None
     bot["invulnerable_until"] = monotonic() + SPAWN_PROTECTION_SECONDS
     bot["connected"] = True
+    equip_progression_weapon(bot)
     return True
 
 
@@ -146,6 +147,7 @@ def create_fill_bot() -> None:
         "patrol_y": y,
         "strafe_sign": 1.0 if uuid4().int % 2 else -1.0,
     }
+    equip_progression_weapon(players[bot_id])
 
 
 def remove_one_fill_bot() -> bool:
@@ -255,6 +257,8 @@ def advance_fill_bot_ai(now: float) -> None:
         return
 
     for bot in players.values():
+        if not round_is_active():
+            break
         if not bot["is_bot"] or bot["owner_id"] is not None or not bot["alive"]:
             continue
 
@@ -278,19 +282,6 @@ def advance_fill_bot_ai(now: float) -> None:
             continue
 
         target = min(targets, key=lambda player: hypot(player["x"] - bot["x"], player["y"] - bot["y"]))
-
-        if bot["weapon"] not in RANGED_WEAPON_SETTINGS:
-            ranged_pickups = [pickup for pickup in weapon_pickups if pickup["weapon"] in RANGED_WEAPON_SETTINGS]
-            pickup_choices = ranged_pickups or list(weapon_pickups)
-            if pickup_choices:
-                pickup = min(
-                    pickup_choices,
-                    key=lambda item: hypot(item["x"] - bot["x"], item["y"] - bot["y"]),
-                )
-                pickup_distance = set_bot_move_direction(bot, pickup["x"], pickup["y"])
-                if pickup_distance <= PLAYER_RADIUS + PICKUP_RADIUS:
-                    collect_weapon_pickup(bot)
-                continue
 
         distance_to_target = set_bot_move_direction(bot, target["x"], target["y"])
         direction_x = target["x"] - bot["x"]

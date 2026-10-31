@@ -5,7 +5,7 @@ must run inside a room context (set by the game loop or a WebSocket handler).
 """
 
 from math import atan2, cos, hypot, isfinite, sin
-from random import choices, shuffle, uniform
+from random import shuffle, uniform
 from time import monotonic
 from typing import Any
 from uuid import uuid4
@@ -23,11 +23,8 @@ from .config import (
     KNIFE_BLOCK_REACH,
     KNIFE_SPEED_MULTIPLIER,
     MAGAZINE_CAPACITIES,
-    MATCH_DURATION_SECONDS,
+    GUN_GAME_WEAPONS,
     MAX_HEALTH_PICKUPS,
-    MAX_KNIFE_PICKUPS,
-    MAX_RIFLE_PICKUPS,
-    MAX_WEAPON_PICKUPS,
     MELEE_WEAPON_SETTINGS,
     MIN_PLAYERS_TO_START_ROUND,
     MIN_SPAWN_DISTANCE_FROM_ENEMY,
@@ -48,7 +45,6 @@ from .config import (
 from .state import (
     bullets,
     create_initial_health_pickups,
-    create_initial_weapon_pickups,
     current_room,
     health_pickups,
     hit_events,
@@ -129,19 +125,23 @@ def fire_weapon(player: dict[str, Any], message: dict[str, Any]) -> bool:
     normalized_x = direction_x / direction_length
     normalized_y = direction_y / direction_length
     start_distance = PLAYER_RADIUS + BULLET_RADIUS
-    bullets.append(
-        {
-            "id": f"bullet-{uuid4().hex[:8]}",
-            "owner_id": player["id"],
-            "weapon": player["weapon"],
-            "damage": settings["damage"],
-            "x": player["x"] + normalized_x * start_distance,
-            "y": player["y"] + normalized_y * start_distance,
-            "velocity_x": normalized_x * settings["bullet_speed"],
-            "velocity_y": normalized_y * settings["bullet_speed"],
-            "remaining_seconds": settings["bullet_lifetime_seconds"],
-        }
-    )
+    offsets = (-12, -7.2, -2.4, 2.4, 7.2, 12) if player["weapon"] == "shotgun" else (0,)
+    for offset in offsets:
+        angle = atan2(normalized_y, normalized_x) + offset * 3.141592653589793 / 180
+        pellet_x, pellet_y = cos(angle), sin(angle)
+        bullets.append(
+            {
+                "id": f"bullet-{uuid4().hex[:8]}",
+                "owner_id": player["id"],
+                "weapon": player["weapon"],
+                "damage": settings["damage"],
+                "x": player["x"] + pellet_x * start_distance,
+                "y": player["y"] + pellet_y * start_distance,
+                "velocity_x": pellet_x * settings["bullet_speed"],
+                "velocity_y": pellet_y * settings["bullet_speed"],
+                "remaining_seconds": settings["bullet_lifetime_seconds"],
+            }
+        )
     player["last_fire_at"] = now
     player["ammo_in_mag"] -= 1
     return True
@@ -293,9 +293,23 @@ def get_spawn_protection_ends_in_seconds(player: dict[str, Any], now: float) -> 
     return max(0.0, invulnerable_until - now) if isinstance(invulnerable_until, float) else 0.0
 
 
+def equip_progression_weapon(player: dict[str, Any]) -> None:
+    """Give humans and bots the weapon for their persistent round level."""
+    level = player.setdefault("weapon_level", 0)
+    weapon = GUN_GAME_WEAPONS[level]
+    player["weapon"] = weapon
+    player["melee_weapon"] = weapon if weapon in MELEE_WEAPON_SETTINGS else DEFAULT_WEAPON
+    player["gun_weapon"] = weapon if weapon in RANGED_WEAPON_SETTINGS else None
+    player["magazine_capacity"] = MAGAZINE_CAPACITIES.get(weapon, 0)
+    player["ammo_in_mag"] = player["magazine_capacity"]
+    player["reload_ends_at"] = None
+    player["melee_started_at"] = None
+    player["melee_ends_at"] = None
+
+
 def apply_damage(player: dict[str, Any], damage: float, attacker_id: str, weapon: str | None = None) -> bool:
     """Apply damage, then award damage and a kill using authoritative server state."""
-    if not player["alive"] or not player["connected"]:
+    if not round_is_active() or not player["alive"] or not player["connected"]:
         return False
     if get_spawn_protection_ends_in_seconds(player, monotonic()) > 0:
         return False
@@ -328,6 +342,14 @@ def apply_damage(player: dict[str, Any], damage: float, attacker_id: str, weapon
         player["respawn_at"] = monotonic() + RESPAWN_DELAY_SECONDS
         if attacker is not None and attacker_id != player["id"]:
             attacker["kills"] += 1
+            level = attacker.get("weapon_level", 0)
+            # Old projectiles may earn a kill, but cannot skip the next weapon.
+            if (weapon or attacker["weapon"]) == GUN_GAME_WEAPONS[level]:
+                if level == len(GUN_GAME_WEAPONS) - 1:
+                    end_round(monotonic(), attacker_id)
+                else:
+                    attacker["weapon_level"] = level + 1
+                    equip_progression_weapon(attacker)
     return True
 
 
@@ -382,6 +404,8 @@ def bullet_is_blocked(bullet: dict[str, Any]) -> bool:
 def advance_bullets(elapsed: float) -> None:
     """Advance every projectile and remove bullets that leave the playable world."""
     for bullet in bullets.copy():
+        if not round_is_active():
+            break
         bullet["x"] += bullet["velocity_x"] * elapsed
         bullet["y"] += bullet["velocity_y"] * elapsed
         bullet["remaining_seconds"] -= elapsed
@@ -409,7 +433,8 @@ def advance_bullets(elapsed: float) -> None:
 
             if hypot(bullet["x"] - target["x"], bullet["y"] - target["y"]) <= BULLET_RADIUS + PLAYER_RADIUS:
                 apply_damage(target, bullet["damage"], bullet["owner_id"], bullet["weapon"])
-                bullets.remove(bullet)
+                if bullet in bullets:
+                    bullets.remove(bullet)
                 break
 
 
@@ -440,26 +465,7 @@ def position_hits_cover(x: float, y: float, radius: float) -> bool:
 
 
 def collect_weapon_pickup(player: dict[str, Any]) -> bool:
-    """Equip a nearby weapon after a server-validated pickup request."""
-    if not player["alive"] or not player["connected"] or not round_is_active():
-        return False
-
-    for pickup in weapon_pickups.copy():
-        distance_to_pickup = hypot(player["x"] - pickup["x"], player["y"] - pickup["y"])
-        if distance_to_pickup <= PLAYER_RADIUS + PICKUP_RADIUS:
-            if pickup["weapon"] in MELEE_WEAPON_SETTINGS:
-                player["melee_weapon"] = pickup["weapon"]
-                player["weapon"] = pickup["weapon"]
-                player["reload_ends_at"] = None
-            else:
-                player["gun_weapon"] = pickup["weapon"]
-                player["magazine_capacity"] = MAGAZINE_CAPACITIES.get(pickup["weapon"], 0)
-                player["ammo_in_mag"] = player["magazine_capacity"]
-                player["reload_ends_at"] = None
-                player["weapon"] = pickup["weapon"]
-            weapon_pickups.remove(pickup)
-            return True
-
+    """Gun Game weapons are earned through kills, never ground pickups."""
     return False
 
 
@@ -487,26 +493,13 @@ def collect_pickup(player: dict[str, Any]) -> bool:
 
 
 def switch_weapon(player: dict[str, Any]) -> bool:
-    """Toggle the active weapon between the ranged and melee slots."""
-    if not player["alive"] or not player["connected"]:
-        return False
-
-    if player["weapon"] in RANGED_WEAPON_SETTINGS:
-        player["weapon"] = player.get("melee_weapon", DEFAULT_WEAPON)
-        player["reload_ends_at"] = None
-        return True
-
-    if player.get("gun_weapon") is not None:
-        player["weapon"] = player["gun_weapon"]
-        return True
-
+    """Keep the current progression weapon equipped."""
     return False
 
 
 def reset_weapon_pickups() -> None:
-    """Restore every map weapon for the local development test panel."""
+    """Gun Game has medkits but no ground weapons."""
     weapon_pickups.clear()
-    weapon_pickups.extend(create_initial_weapon_pickups())
 
 
 def reset_health_pickups() -> None:
@@ -515,26 +508,9 @@ def reset_health_pickups() -> None:
     health_pickups.extend(create_initial_health_pickups())
 
 
-PICKUP_SPAWN_TYPES = ("health", "pistol", "knife", "rifle")
-PICKUP_SPAWN_WEIGHTS = (0.4, 0.35, 0.15, 0.1)
-
-
 def choose_pickup_spawn_kind() -> str | None:
-    """Pick a random spawn type that is still under its map cap."""
-    for _ in range(8):
-        kind = choices(PICKUP_SPAWN_TYPES, weights=PICKUP_SPAWN_WEIGHTS, k=1)[0]
-        if kind == "health":
-            if len(health_pickups) < MAX_HEALTH_PICKUPS:
-                return kind
-            continue
-        if len(weapon_pickups) >= MAX_WEAPON_PICKUPS:
-            continue
-        if kind == "rifle" and sum(1 for pickup in weapon_pickups if pickup["weapon"] == "rifle") >= MAX_RIFLE_PICKUPS:
-            continue
-        if kind == "knife" and sum(1 for pickup in weapon_pickups if pickup["weapon"] == "knife") >= MAX_KNIFE_PICKUPS:
-            continue
-        return kind
-    return None
+    """Only medkits spawn during Gun Game."""
+    return "health" if len(health_pickups) < MAX_HEALTH_PICKUPS else None
 
 
 def find_pickup_spawn_position() -> tuple[float, float] | None:
@@ -601,11 +577,12 @@ def advance_pickup_spawner(now: float) -> bool:
 
 
 def reset_round_world() -> None:
-    """Restore the battlefield for a fresh three-minute scoring period."""
+    """Restore the battlefield for a fresh weapon progression round."""
     bullets.clear()
     reset_weapon_pickups()
     reset_health_pickups()
     for player_number, player in enumerate(players.values()):
+        player["weapon_level"] = 0
         respawn_player(player, player_number)
         player["damage_dealt"] = 0.0
         player["kills"] = 0
@@ -636,7 +613,7 @@ def find_spawn_position(excluded_player_id: str, fallback_number: int) -> tuple[
 
 
 def respawn_player(player: dict[str, Any], player_number: int) -> None:
-    """Restore one player at a random safe spawn for continuous deathmatch."""
+    """Restore one player at a random safe spawn for Gun Game."""
     player["x"], player["y"] = find_spawn_position(player["id"], player_number)
     player["move_x"] = 0.0
     player["move_y"] = 0.0
@@ -655,6 +632,7 @@ def respawn_player(player: dict[str, Any], player_number: int) -> None:
     player["alive"] = True
     player["respawn_at"] = None
     player["invulnerable_until"] = monotonic() + SPAWN_PROTECTION_SECONDS
+    equip_progression_weapon(player)
 
 
 def advance_respawns(now: float) -> None:
@@ -670,12 +648,12 @@ def advance_respawns(now: float) -> None:
 
 
 def start_round(now: float) -> None:
-    """Start a fresh three-minute, server-authoritative scoring period."""
+    """Start a fresh server-authoritative Gun Game round."""
     reset_round_world()
     round_state["phase"] = "active"
     round_state["number"] += 1
     round_state["winner_id"] = None
-    round_state["ends_at"] = now + MATCH_DURATION_SECONDS
+    round_state["ends_at"] = None
     current_room()["next_pickup_spawn_at"] = now + PICKUP_SPAWN_INTERVAL_SECONDS
     for player in players.values():
         if player["is_bot"] and player["owner_id"] is None:
@@ -704,7 +682,7 @@ def get_round_snapshot(now: float) -> dict[str, Any]:
     }
 
 
-def end_round(now: float) -> None:
+def end_round(now: float, winner_id: str) -> None:
     """Freeze the battlefield, crown a winner, and pause before the next round."""
     round_state["phase"] = "ending"
     round_state["ends_at"] = now + ROUND_END_DELAY_SECONDS
@@ -713,20 +691,11 @@ def end_round(now: float) -> None:
         player["move_x"] = 0.0
         player["move_y"] = 0.0
 
-    ranked = sorted(
-        players.values(),
-        key=lambda player: (player["kills"], player["damage_dealt"]),
-        reverse=True,
-    )
-    leader = ranked[0] if ranked else None
-    if leader and (leader["kills"] > 0 or leader["damage_dealt"] > 0):
-        round_state["winner_id"] = leader["id"]
-    else:
-        round_state["winner_id"] = None
+    round_state["winner_id"] = winner_id
 
 
 def advance_round(now: float) -> None:
-    """Advance the deathmatch through waiting, active, and ending phases."""
+    """Advance Gun Game through waiting, active, and ending phases."""
     phase = round_state["phase"]
     if phase == "waiting":
         if round_state["start_requested"] and len(players) >= MIN_PLAYERS_TO_START_ROUND:
@@ -734,9 +703,6 @@ def advance_round(now: float) -> None:
         return
 
     if phase == "active":
-        ends_at = round_state["ends_at"]
-        if isinstance(ends_at, float) and now >= ends_at:
-            end_round(now)
         return
 
     if phase == "ending":

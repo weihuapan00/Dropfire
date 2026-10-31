@@ -31,7 +31,7 @@ export class Soundscape {
     return this.musicEnabled;
   }
 
-  playShot(weapon: "pistol" | "rifle"): void {
+  playShot(weapon: "pistol" | "rifle" | "shotgun" | "sniper"): void {
     const context = this.getContext();
     if (!context || context.state !== "running") return;
 
@@ -39,7 +39,7 @@ export class Soundscape {
     const oscillator = context.createOscillator();
     const gain = context.createGain();
     oscillator.type = weapon === "rifle" ? "sawtooth" : "square";
-    oscillator.frequency.setValueAtTime(weapon === "rifle" ? 165 : 240, now);
+    oscillator.frequency.setValueAtTime(weapon === "shotgun" ? 95 : weapon === "sniper" ? 320 : weapon === "rifle" ? 165 : 240, now);
     oscillator.frequency.exponentialRampToValueAtTime(55, now + (weapon === "rifle" ? 0.12 : 0.08));
     gain.gain.setValueAtTime(0.035, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + (weapon === "rifle" ? 0.14 : 0.1));

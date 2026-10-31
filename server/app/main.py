@@ -53,6 +53,7 @@ from .rules import (
     attack_with_melee,
     collect_pickup,
     fire_weapon,
+    equip_progression_weapon,
     get_melee_progress,
     get_reload_progress,
     get_respawn_ends_in_seconds,
@@ -190,6 +191,7 @@ def broadcast_world_state() -> None:
                 "connected": player["connected"],
                 "damage_dealt": player["damage_dealt"],
                 "kills": player["kills"],
+                "weapon_level": player.get("weapon_level", 0),
                 "respawn_ends_in_seconds": get_respawn_ends_in_seconds(player, now),
                 "spawn_protection_ends_in_seconds": get_spawn_protection_ends_in_seconds(player, now),
                 "is_bot": player["is_bot"],
@@ -373,6 +375,8 @@ async def game_socket(websocket: WebSocket, room_code: str) -> None:
                 "owner_id": None,
                 "name": requested_name,
             }
+
+            equip_progression_weapon(players[player_id])
 
             if current_room()["host_player_id"] is None:
                 current_room()["host_player_id"] = player_id
