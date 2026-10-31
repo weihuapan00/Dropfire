@@ -49,6 +49,18 @@ state at a fixed tick rate before broadcasting snapshots to connected players.
 
 ## Run locally
 
+On macOS/Linux, install Python 3 and Node.js, then run from the project root:
+
+```bash
+./dev.sh
+```
+
+The script creates the Python virtual environment, installs dependencies on the
+first run (and when manifests change), then starts both services with live reload.
+Open [http://localhost:5173](http://localhost:5173). Press **Ctrl+C** to stop both.
+Use `./dev.sh --server-only` to start just the backend. Ports 8000 and 5173 must
+be available. For manual setup or Windows, follow the steps below.
+
 ### 1. Start the server
 
 macOS/Linux:

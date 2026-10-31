@@ -37,7 +37,8 @@ RELOAD_DURATION_SECONDS = 1.2
 
 MELEE_WEAPON_SETTINGS: dict[str, dict[str, float]] = {
     "fists": {
-        "damage": 30.0,
+        "damage": 10.0,
+        "knockback_distance": 64.0,
         "reach": 62.0,
         "cooldown_seconds": 0.5,
         "minimum_dot_product": 0.5,

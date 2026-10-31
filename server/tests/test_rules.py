@@ -250,8 +250,43 @@ def test_melee_damage_differs_by_weapon(room):
     hit = attack_with_melee(fists_attacker, {"direction_x": 1.0, "direction_y": 0.0})
 
     assert hit is True
-    assert fists_target["hp"] == 70
+    assert fists_target["hp"] == 90
     assert fists_target["alive"] is True
+
+
+@pytest.mark.parametrize(
+    "attacker_x,target_x,y,expected_x",
+    [
+        (500.0, 540.0, 300.0, 604.0),  # Open floor: push away by 64px.
+        (2420.0, 2460.0, 300.0, 2488.0),  # Stop at the arena edge.
+        (520.0, 560.0, 500.0, 596.0),  # Stop before west cover (edge at x=620).
+    ],
+)
+def test_fists_deal_ten_damage_and_push_without_crossing_walls(room, attacker_x, target_x, y, expected_x):
+    activate_round(room)
+    attacker = make_player("attacker", x=attacker_x, y=y)
+    target = make_player("target", x=target_x, y=y)
+    room["players"].update(attacker=attacker, target=target)
+
+    assert attack_with_melee(attacker, {"direction_x": 1, "direction_y": 0})
+    assert target["hp"] == 90
+    assert target["x"] == pytest.approx(expected_x)
+    assert target["y"] == y
+    assert attacker["damage_dealt"] == 10
+    # The existing cooldown also prevents a second displacement.
+    assert not attack_with_melee(attacker, {"direction_x": 1, "direction_y": 0})
+    assert target["x"] == pytest.approx(expected_x)
+
+
+def test_spawn_protection_prevents_punch_damage_and_knockback(room):
+    activate_round(room)
+    attacker = make_player("attacker", x=500.0, y=300.0)
+    target = make_player("target", x=540.0, y=300.0, invulnerable_until=monotonic() + 10)
+    room["players"].update(attacker=attacker, target=target)
+
+    assert attack_with_melee(attacker, {"direction_x": 1, "direction_y": 0})
+    assert target["hp"] == 100
+    assert target["x"] == 540.0
 
 
 def test_advance_round_starts_when_requested(room):

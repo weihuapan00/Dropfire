@@ -1,5 +1,7 @@
 import Phaser from "phaser";
 
+import { PlayerAvatar } from "../PlayerAvatar";
+
 import {
   MobileInput,
   MOBILE_JOYSTICK_X, MOBILE_JOYSTICK_Y, MOBILE_JOYSTICK_RADIUS,
@@ -263,7 +265,7 @@ function isRoundState(value: unknown): value is RoundState {
 }
 
 export class ArenaScene extends Phaser.Scene {
-  private readonly players = new Map<string, Phaser.GameObjects.Arc>();
+  private readonly players = new Map<string, PlayerAvatar>();
   private readonly playerRenderTargets = new Map<string, Phaser.Math.Vector2>();
   private readonly heldWeapons = new Map<string, Phaser.GameObjects.Image>();
   private readonly facingAngles = new Map<string, number>();
@@ -282,7 +284,7 @@ export class ArenaScene extends Phaser.Scene {
   private readonly coverRects: Array<{ x: number; y: number; width: number; height: number }> = [];
   private readonly currentMoveDirection = new Phaser.Math.Vector2();
   private localPlayerId: string | null = null;
-  private localPlayer: Phaser.GameObjects.Arc | null = null;
+  private localPlayer: PlayerAvatar | null = null;
   private localWeapon: WeaponType = "fists";
   private localGunWeapon: WeaponType | null = null;
   private localAmmoInMag = 0;
@@ -697,14 +699,7 @@ export class ArenaScene extends Phaser.Scene {
       if (!player) {
         const isLocalPlayer = playerState.id === this.localPlayerId;
         const playerColor = isLocalPlayer ? 0x5bf2bd : playerState.is_bot ? 0xf15d58 : 0xf5c55b;
-        const strokeColor = isLocalPlayer ? 0xd8fff1 : playerState.is_bot ? 0xffc1b7 : 0xffe2a1;
-        player = this.add.circle(
-          playerState.x,
-          playerState.y,
-          PLAYER_RADIUS,
-          playerColor,
-        );
-        player.setStrokeStyle(4, strokeColor, 0.85);
+        player = new PlayerAvatar(this, playerState.x, playerState.y, playerColor);
         this.players.set(playerState.id, player);
         this.weaponLabels.set(
           playerState.id,
@@ -721,19 +716,15 @@ export class ArenaScene extends Phaser.Scene {
 
       const isLocalPlayer = playerState.id === this.localPlayerId;
       const playerColor = isLocalPlayer ? 0x5bf2bd : playerState.is_bot ? 0xf15d58 : 0xf5c55b;
-      const strokeColor = isLocalPlayer ? 0xd8fff1 : playerState.is_bot ? 0xffc1b7 : 0xffe2a1;
       const respawnedThisUpdate = this.playerAliveStates.get(playerState.id) === false && playerState.alive;
       if (!playerState.connected) {
         player.setFillStyle(0x4c5566);
-        player.setStrokeStyle(4, 0xb9c4d4, 0.5);
         player.setAlpha(0.45);
       } else if (playerState.alive) {
         player.setFillStyle(playerColor);
-        player.setStrokeStyle(4, strokeColor, 0.85);
         player.setAlpha(1);
       } else {
         player.setFillStyle(0x667085);
-        player.setStrokeStyle(4, 0xaab2c0, 0.65);
         player.setAlpha(0.6);
       }
 
@@ -1024,7 +1015,7 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private reconcileLocalPlayer(
-    player: Phaser.GameObjects.Arc,
+    player: PlayerAvatar,
     target: Phaser.Math.Vector2,
     delta: number,
   ): void {
@@ -1062,13 +1053,14 @@ export class ArenaScene extends Phaser.Scene {
     heldWeapon.setVisible(playerState.alive && playerState.connected);
   }
 
-  private updateHeldWeaponTransform(playerId: string, player: Phaser.GameObjects.Arc): void {
+  private updateHeldWeaponTransform(playerId: string, player: PlayerAvatar): void {
+    const facing = this.updateFacingAngle(playerId, player);
+    player.setRotation(facing);
     const heldWeapon = this.heldWeapons.get(playerId);
     if (!heldWeapon || !heldWeapon.visible) {
       return;
     }
 
-    const facing = this.updateFacingAngle(playerId, player);
     heldWeapon.setPosition(
       player.x + Math.cos(facing) * HELD_WEAPON_OFFSET,
       player.y + Math.sin(facing) * HELD_WEAPON_OFFSET,
@@ -1076,7 +1068,7 @@ export class ArenaScene extends Phaser.Scene {
     heldWeapon.setRotation(facing);
   }
 
-  private updateFacingAngle(playerId: string, player: Phaser.GameObjects.Arc): number {
+  private updateFacingAngle(playerId: string, player: PlayerAvatar): number {
     if (playerId === this.localPlayerId) {
       const aimAngle = this.getAimAngle();
       this.facingAngles.set(playerId, aimAngle);
@@ -1182,7 +1174,7 @@ export class ArenaScene extends Phaser.Scene {
     return false;
   }
 
-  private drawReloadIndicator(playerId: string, player: Phaser.GameObjects.Arc): void {
+  private drawReloadIndicator(playerId: string, player: PlayerAvatar): void {
     const progress = this.reloadProgress.get(playerId) ?? 0;
     let indicator = this.reloadIndicators.get(playerId);
     if (progress <= 0) {
@@ -1209,7 +1201,7 @@ export class ArenaScene extends Phaser.Scene {
     indicator.strokePath();
   }
 
-  private drawMeleeIndicator(playerId: string, player: Phaser.GameObjects.Arc): void {
+  private drawMeleeIndicator(playerId: string, player: PlayerAvatar): void {
     const progress = this.meleeProgress.get(playerId) ?? 0;
     let indicator = this.meleeIndicators.get(playerId);
     if (progress <= 0) {
@@ -1449,6 +1441,12 @@ export class ArenaScene extends Phaser.Scene {
         soundscape.playHitMarker();
       }
       if (hit.target_id === this.localPlayerId) {
+        // Movement prediction must accept a server-applied punch displacement,
+        // including while the player is holding a movement key.
+        if (hit.weapon === "fists" && !hit.killed && this.localPlayer) {
+          const target = this.playerRenderTargets.get(hit.target_id);
+          if (target) this.localPlayer.setPosition(target.x, target.y);
+        }
         this.showHurtFlash();
         soundscape.playHurt();
         navigator.vibrate?.(20);

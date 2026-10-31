@@ -218,8 +218,28 @@ def attack_with_melee(player: dict[str, Any], message: dict[str, Any]) -> bool:
             closest_distance = distance
 
     if closest_target:
-        apply_damage(closest_target, melee_settings["damage"], player["id"], player["weapon"])
+        damaged = apply_damage(closest_target, melee_settings["damage"], player["id"], player["weapon"])
+        if damaged and closest_target["alive"] and player["weapon"] == "fists":
+            push_player_away(closest_target, player, melee_settings["knockback_distance"])
     return True
+
+
+def push_player_away(target: dict[str, Any], attacker: dict[str, Any], distance: float) -> None:
+    """Step a short knockback along its path so it cannot skip through cover."""
+    offset_x = target["x"] - attacker["x"]
+    offset_y = target["y"] - attacker["y"]
+    length = hypot(offset_x, offset_y)
+    if length == 0:
+        return
+    remaining = distance
+    while remaining > 0:
+        step = min(4.0, remaining)
+        x = max(ARENA_MIN_X, min(ARENA_MAX_X, target["x"] + offset_x / length * step))
+        y = max(ARENA_MIN_Y, min(ARENA_MAX_Y, target["y"] + offset_y / length * step))
+        if position_hits_cover(x, y, PLAYER_RADIUS):
+            break
+        target["x"], target["y"] = x, y
+        remaining -= step
 
 
 def get_reload_progress(player: dict[str, Any], now: float) -> float:
