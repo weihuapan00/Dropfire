@@ -119,3 +119,12 @@ To publish an update, open **GitHub → Actions → Deploy → Run workflow**, s
 workflow reruns CI and, if successful, deploys that exact commit to Oracle,
 builds the client, restarts FastAPI, and checks `/api/health`. Deployments from
 other branches are skipped. Deployment uses the existing production secrets.
+
+Deployment snapshots the previous commit, Python virtual environment, and
+published frontend before making changes. A build, restart, or health-check
+failure automatically restores those snapshots and checks the old service.
+Actions still reports failure after a successful rollback. If rollback fails,
+the server retains the snapshot and logs its location for manual recovery.
+The server checkout must have no tracked edits and pass its initial health check.
+A restart still disconnects players and clears in-memory rooms. Automatic rollback
+covers script errors, not forced termination, host failure, or database migrations.

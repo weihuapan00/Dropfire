@@ -24,6 +24,9 @@ jobs:
     environment: production
 
     steps:
+      - name: Check out deployment script
+        uses: actions/checkout@v4
+
       - name: Configure the deployment SSH key
         env:
           DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
@@ -41,30 +44,4 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_SHA: ${{ github.sha }}
         run: |
-          ssh -i ~/.ssh/id_ed25519 "$DEPLOY_USER@$DEPLOY_HOST" "bash -se -- '$DEPLOY_SHA'" <<'REMOTE'
-            set -euo pipefail
-            cd /home/ubuntu/dropfire
-            git fetch origin main
-            git merge-base --is-ancestor "$1" origin/main
-            git merge --ff-only "$1"
-            test "$(git rev-parse HEAD)" = "$1"
-
-            /home/ubuntu/dropfire/server/.venv/bin/pip install --requirement server/requirements.txt
-            cd /home/ubuntu/dropfire/client
-            npm ci
-            npm run build
-
-            sudo install -d -o caddy -g caddy /var/www/dropfire
-            sudo cp -a dist/. /var/www/dropfire/
-            sudo chown -R caddy:caddy /var/www/dropfire
-            sudo systemctl restart dropfire
-            sudo systemctl reload caddy
-            for attempt in {1..10}; do
-              if curl --fail --silent --show-error http://127.0.0.1:8000/api/health; then
-                exit 0
-              fi
-              sleep 2
-            done
-            sudo systemctl status dropfire --no-pager
-            exit 1
-          REMOTE
+          ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i ~/.ssh/id_ed25519 "$DEPLOY_USER@$DEPLOY_HOST" "bash -se -- '$DEPLOY_SHA'" < scripts/deploy.sh
